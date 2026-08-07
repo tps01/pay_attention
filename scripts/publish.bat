@@ -24,6 +24,15 @@ if not exist "publish\PayAttention.exe" (
 )
 
 echo.
+echo Building user guide PDF...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0build-user-guide.ps1"
+if errorlevel 1 (
+  echo User guide PDF build failed.
+  exit /b 1
+)
+
+echo.
 echo Done. Run: %cd%\publish\PayAttention.exe
+echo User guide: %cd%\publish\PayAttention-UserGuide.pdf
 echo You can double-click PayAttention.exe or create a shortcut.
 endlocal

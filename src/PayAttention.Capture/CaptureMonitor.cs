@@ -242,24 +242,28 @@ public sealed class CaptureMonitor : IDisposable
     private async Task<string> RecognizeBitmapMultiPassAsync(Bitmap bitmap, AppConfig config, CancellationToken token)
     {
         var chunks = new List<string>(8);
+        var enabledCount = config.Triggers.Count(t => t.Enabled && !string.IsNullOrWhiteSpace(t.Text));
 
-        // Baseline pass at configured scale
-        await AddOcrPassAsync(chunks, bitmap, config.OcrMaxWidth, config.OcrUpscalePercent, invert: false, contrast: false, token)
+        // Baseline pass at configured scale (color, unmodified for OCR aside from scale).
+        await AddOcrPassAsync(chunks, bitmap, config.OcrMaxWidth, config.OcrUpscalePercent, invert: false, OcrPrepMode.None, token)
             .ConfigureAwait(false);
 
-        // Boosted dark-terminal pass (invert + contrast) — one combined pass, not many.
+        // Gray → adaptive stretch → invert (dark-terminal / low-contrast boost).
         var boost = Math.Max(config.OcrUpscalePercent, 200);
-        await AddOcrPassAsync(chunks, bitmap, config.OcrMaxWidth, boost, invert: true, contrast: true, token)
+        await AddOcrPassAsync(chunks, bitmap, config.OcrMaxWidth, boost, invert: true, OcrPrepMode.AdaptiveContrast, token)
+            .ConfigureAwait(false);
+
+        // Neon-biased high-contrast without forcing invert (complements adaptive path).
+        await AddOcrPassAsync(chunks, bitmap, config.OcrMaxWidth, boost, invert: false, OcrPrepMode.NeonHighContrast, token)
             .ConfigureAwait(false);
 
         if (config.OcrInvertColors && config.OcrUpscalePercent != boost)
         {
-            await AddOcrPassAsync(chunks, bitmap, config.OcrMaxWidth, config.OcrUpscalePercent, invert: true, contrast: false, token)
+            await AddOcrPassAsync(chunks, bitmap, config.OcrMaxWidth, config.OcrUpscalePercent, invert: true, OcrPrepMode.None, token)
                 .ConfigureAwait(false);
         }
 
         var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
-        var enabledCount = config.Triggers.Count(t => t.Enabled && !string.IsNullOrWhiteSpace(t.Text));
         if (AllEnabledMatched(joined, config, enabledCount))
             return joined;
 
@@ -269,7 +273,13 @@ public sealed class CaptureMonitor : IDisposable
         if (AllEnabledMatched(joined, config, enabledCount))
             return joined;
 
-        await RecognizeTilesAsync(chunks, bitmap, config, token).ConfigureAwait(false);
+        await RecognizeTilesAsync(chunks, bitmap, config, enabledCount, token).ConfigureAwait(false);
+        joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+        if (AllEnabledMatched(joined, config, enabledCount))
+            return joined;
+
+        // Dense terminal lines: OCR overlapping horizontal bands at high upscale.
+        await RecognizeHorizontalBandsAsync(chunks, bitmap, config, token).ConfigureAwait(false);
         return string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
     }
 
@@ -284,14 +294,59 @@ public sealed class CaptureMonitor : IDisposable
     {
         var regions = ImageHelpers.FindTerminalLikeRegions(bitmap);
         var scale = Math.Max(config.OcrUpscalePercent, 300);
+        var hiScale = Math.Max(config.OcrUpscalePercent, 400);
         foreach (var region in regions)
         {
             token.ThrowIfCancellationRequested();
             using var crop = bitmap.Clone(region, bitmap.PixelFormat);
-            await AddOcrPassAsync(chunks, crop, config.OcrMaxWidth, scale, invert: true, contrast: true, token)
+            await AddOcrPassAsync(chunks, crop, config.OcrMaxWidth, scale, invert: true, OcrPrepMode.NeonHighContrast, token)
                 .ConfigureAwait(false);
-            await AddOcrPassAsync(chunks, crop, config.OcrMaxWidth, scale, invert: false, contrast: true, token)
+            await AddOcrPassAsync(chunks, crop, config.OcrMaxWidth, scale, invert: false, OcrPrepMode.AdaptiveContrast, token)
                 .ConfigureAwait(false);
+            await AddOcrPassAsync(chunks, crop, config.OcrMaxWidth, hiScale, invert: true, OcrPrepMode.NeonHighContrast, token)
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Split terminal ROIs (or the full frame) into overlapping horizontal strips so
+    /// dense console lines do not get dropped by full-frame OCR.
+    /// </summary>
+    private async Task RecognizeHorizontalBandsAsync(
+        List<string> chunks,
+        Bitmap bitmap,
+        AppConfig config,
+        CancellationToken token)
+    {
+        var regions = ImageHelpers.FindTerminalLikeRegions(bitmap);
+        if (regions.Count == 0)
+            regions = [new Rectangle(0, 0, bitmap.Width, bitmap.Height)];
+
+        var scale = Math.Max(config.OcrUpscalePercent, 350);
+        var bandPasses = 0;
+        const int maxBandPasses = 8;
+
+        foreach (var region in regions)
+        {
+            if (bandPasses >= maxBandPasses)
+                break;
+
+            var bandHeight = Math.Max(64, region.Height / 4);
+            var overlap = Math.Max(24, bandHeight / 3);
+            var step = Math.Max(1, bandHeight - overlap);
+
+            for (var y = region.Top; y < region.Bottom && bandPasses < maxBandPasses; y += step)
+            {
+                token.ThrowIfCancellationRequested();
+                var h = Math.Min(bandHeight, region.Bottom - y);
+                if (h < 40 || region.Width < 120)
+                    continue;
+
+                using var band = bitmap.Clone(new Rectangle(region.Left, y, region.Width, h), bitmap.PixelFormat);
+                await AddOcrPassAsync(chunks, band, config.OcrMaxWidth, scale, invert: true, OcrPrepMode.AdaptiveContrast, token)
+                    .ConfigureAwait(false);
+                bandPasses++;
+            }
         }
     }
 
@@ -299,55 +354,74 @@ public sealed class CaptureMonitor : IDisposable
         List<string> chunks,
         Bitmap bitmap,
         AppConfig config,
+        int enabledCount,
         CancellationToken token)
     {
-        // Coarse 2×2 grid with overlap — enough to magnify small text without
-        // turning every OCR tick into a multi-second stall.
-        const int overlap = 80;
-        var tileW = Math.Max(320, (bitmap.Width + overlap) / 2);
-        var tileH = Math.Max(240, (bitmap.Height + overlap) / 2);
+        var grid = ImageHelpers.ChooseOcrTileGrid(bitmap.Width, bitmap.Height);
+        var maxTiles = grid * grid;
+        var overlap = Math.Max(80, Math.Min(bitmap.Width, bitmap.Height) / (grid * 10));
+        var tileW = Math.Max(320, (bitmap.Width + overlap * (grid - 1)) / grid);
+        var tileH = Math.Max(240, (bitmap.Height + overlap * (grid - 1)) / grid);
         var stepX = Math.Max(1, tileW - overlap);
         var stepY = Math.Max(1, tileH - overlap);
         var scale = Math.Max(config.OcrUpscalePercent, 250);
-        var passes = 0;
-        const int maxTiles = 4;
 
-        for (var y = 0; y < bitmap.Height && passes < maxTiles; y += stepY)
+        var tiles = new List<Rectangle>(maxTiles);
+        for (var y = 0; y < bitmap.Height && tiles.Count < maxTiles; y += stepY)
         {
-            for (var x = 0; x < bitmap.Width && passes < maxTiles; x += stepX)
+            for (var x = 0; x < bitmap.Width && tiles.Count < maxTiles; x += stepX)
             {
-                token.ThrowIfCancellationRequested();
                 var w = Math.Min(tileW, bitmap.Width - x);
                 var h = Math.Min(tileH, bitmap.Height - y);
                 if (w < 160 || h < 120)
                     continue;
-
-                using var tile = bitmap.Clone(new Rectangle(x, y, w, h), bitmap.PixelFormat);
-                await AddOcrPassAsync(chunks, tile, config.OcrMaxWidth, scale, invert: true, contrast: true, token)
-                    .ConfigureAwait(false);
-                passes++;
+                tiles.Add(new Rectangle(x, y, w, h));
             }
+        }
+
+        // Pass 1: adaptive contrast per tile.
+        foreach (var rect in tiles)
+        {
+            token.ThrowIfCancellationRequested();
+            using var tile = bitmap.Clone(rect, bitmap.PixelFormat);
+            await AddOcrPassAsync(chunks, tile, config.OcrMaxWidth, scale, invert: false, OcrPrepMode.AdaptiveContrast, token)
+                .ConfigureAwait(false);
+            var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+            if (AllEnabledMatched(joined, config, enabledCount))
+                return;
+        }
+
+        // Pass 2 (only if still missing): same tiles with invert + adaptive contrast.
+        foreach (var rect in tiles)
+        {
+            token.ThrowIfCancellationRequested();
+            using var tile = bitmap.Clone(rect, bitmap.PixelFormat);
+            await AddOcrPassAsync(chunks, tile, config.OcrMaxWidth, scale, invert: true, OcrPrepMode.AdaptiveContrast, token)
+                .ConfigureAwait(false);
+            var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+            if (AllEnabledMatched(joined, config, enabledCount))
+                return;
         }
     }
 
+    /// <summary>
+    /// OCR prep creates disposable bitmaps only. Never mutate <paramref name="bitmap"/> —
+    /// saved screenshots/recordings always use the original color frame via QueueCaptureWrite.
+    /// </summary>
     private async Task AddOcrPassAsync(
         List<string> chunks,
         Bitmap bitmap,
         int maxWidth,
         int upscalePercent,
         bool invert,
-        bool contrast,
+        OcrPrepMode prepMode,
         CancellationToken token)
     {
-        Bitmap? contrastBmp = null;
+        Bitmap? prepBmp = null;
         try
         {
-            var source = bitmap;
-            if (contrast)
-            {
-                contrastBmp = ImageHelpers.ToHighContrastGray(bitmap);
-                source = contrastBmp;
-            }
+            prepBmp = ImageHelpers.ApplyOcrPrep(bitmap, prepMode);
+            var source = prepBmp ?? bitmap;
 
             using var prepared = ImageHelpers.PrepareForOcr(source, maxWidth, upscalePercent, invert);
             var text = await _ocr.RecognizeAsync(prepared, token).ConfigureAwait(false);
@@ -356,10 +430,13 @@ public sealed class CaptureMonitor : IDisposable
         }
         finally
         {
-            contrastBmp?.Dispose();
+            prepBmp?.Dispose();
         }
     }
 
+    /// <summary>
+    /// Persist captures from the original color frame. OCR preprocessing never feeds this path.
+    /// </summary>
     private void QueueCaptureWrite(AppConfig config, CapturedFrame frame, TriggerMatchResult match, string ocrText)
     {
         RaiseStatus("Saving", $"Saving '{match.Trigger.Text}'…");

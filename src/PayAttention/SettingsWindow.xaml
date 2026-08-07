@@ -183,7 +183,7 @@
 
             <CheckBox x:Name="OcrInvertBox" Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2"
                       Content="Extra invert pass for OCR"
-                      ToolTip="Adds an invert-only OCR pass. A dark-terminal boost (invert+contrast) already runs automatically; captures stay normal." />
+                      ToolTip="Adds an invert-only OCR pass. Adaptive grayscale contrast and neon boost already run automatically; captures stay full color." />
           </Grid>
         </GroupBox>
 

@@ -95,3 +95,5 @@ def test_punctuation_in_trigger_optional():
     triggers = [TriggerConfig(text="err#42v2", match="contains", enabled=True)]
     assert find_match("status err42v2 done", triggers) is not None
     assert find_match("status err 42v2 done", triggers) is not None
+    # OCR often substitutes * for # and keeps the alnum body
+    assert find_match("REC>err*42v2<", triggers) is not None

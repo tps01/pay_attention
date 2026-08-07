@@ -37,9 +37,9 @@ def test_sequence_fields_survive_normalize_shaped_dict():
 
 
 def test_sequence_defaults_match_product():
-    assert SEQUENCE_INTERVAL_DEFAULT == 3
-    assert SEQUENCE_BEFORE_DEFAULT == 60
-    assert SEQUENCE_AFTER_DEFAULT == 60
+    assert SEQUENCE_INTERVAL_DEFAULT == 5
+    assert SEQUENCE_BEFORE_DEFAULT == 30
+    assert SEQUENCE_AFTER_DEFAULT == 30
 
 
 def test_sequence_file_naming_contract():

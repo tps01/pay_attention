@@ -37,5 +37,15 @@ if (-not (Test-Path $exe)) {
 
 $sizeMb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
 Write-Host ""
+Write-Host "Building user guide PDF..."
+& (Join-Path $PSScriptRoot "build-user-guide.ps1")
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "User guide PDF build failed with exit code $LASTEXITCODE"
+    exit $LASTEXITCODE
+}
+
+$guide = Join-Path $root "publish\PayAttention-UserGuide.pdf"
+Write-Host ""
 Write-Host "Done. Run: $exe ($sizeMb MB)"
+Write-Host "User guide: $guide"
 Write-Host "You can double-click PayAttention.exe or create a shortcut."

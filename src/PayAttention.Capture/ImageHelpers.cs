@@ -4,6 +4,22 @@ using System.Drawing.Imaging;
 
 namespace PayAttention.Capture;
 
+/// <summary>
+/// How a frame is prepared before Windows OCR.
+/// Prep always produces disposable copies — never mutate bitmaps that will be saved as captures.
+/// </summary>
+public enum OcrPrepMode
+{
+    /// <summary>Color frame as-is (aside from scale/invert in PrepareForOcr).</summary>
+    None = 0,
+    /// <summary>Standard luma grayscale, no contrast stretch.</summary>
+    Gray = 1,
+    /// <summary>Grayscale then percentile-based contrast stretch.</summary>
+    AdaptiveContrast = 2,
+    /// <summary>Neon-biased high-contrast gray (dark terminal boost).</summary>
+    NeonHighContrast = 3
+}
+
 public static class ImageHelpers
 {
     public static Bitmap Downscale(Bitmap source, int maxWidth)
@@ -29,7 +45,122 @@ public static class ImageHelpers
     }
 
     /// <summary>
+    /// Standard Rec.601 luma grayscale with no contrast stretch. Caller owns the result.
+    /// </summary>
+    public static Bitmap ToGrayscale(Bitmap source)
+    {
+        var src = EnsureArgb32(source, out var ownsSrc);
+        var result = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
+        var rect = new Rectangle(0, 0, src.Width, src.Height);
+        var srcData = src.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        var dstData = result.LockBits(rect, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            var height = src.Height;
+            var width = src.Width;
+            var srcStride = srcData.Stride;
+            var dstStride = dstData.Stride;
+            var row = new byte[Math.Abs(srcStride)];
+
+            for (var y = 0; y < height; y++)
+            {
+                System.Runtime.InteropServices.Marshal.Copy(srcData.Scan0 + y * srcStride, row, 0, width * 4);
+                for (var x = 0; x < width; x++)
+                {
+                    var i = x * 4;
+                    var lum = (byte)Math.Clamp(
+                        (int)(0.299 * row[i + 2] + 0.587 * row[i + 1] + 0.114 * row[i]),
+                        0, 255);
+                    row[i] = lum;
+                    row[i + 1] = lum;
+                    row[i + 2] = lum;
+                    row[i + 3] = 255;
+                }
+
+                System.Runtime.InteropServices.Marshal.Copy(row, 0, dstData.Scan0 + y * dstStride, width * 4);
+            }
+        }
+        finally
+        {
+            src.UnlockBits(srcData);
+            result.UnlockBits(dstData);
+            if (ownsSrc)
+                src.Dispose();
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Stretch grayscale (or color-as-luma) contrast using sampled low/high percentiles.
+    /// Caller owns the result. Input is not modified.
+    /// </summary>
+    public static Bitmap StretchContrast(Bitmap source, int lowPercentile = 5, int highPercentile = 95)
+    {
+        lowPercentile = Math.Clamp(lowPercentile, 0, 49);
+        highPercentile = Math.Clamp(highPercentile, 51, 100);
+
+        var src = EnsureArgb32(source, out var ownsSrc);
+        try
+        {
+            var (low, high, _) = SampleLumaStats(src, lowPercentile, highPercentile);
+            var result = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
+            var rect = new Rectangle(0, 0, src.Width, src.Height);
+            var srcData = src.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            var dstData = result.LockBits(rect, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                var height = src.Height;
+                var width = src.Width;
+                var srcStride = srcData.Stride;
+                var dstStride = dstData.Stride;
+                var row = new byte[Math.Abs(srcStride)];
+                var span = Math.Max(1, high - low);
+
+                for (var y = 0; y < height; y++)
+                {
+                    System.Runtime.InteropServices.Marshal.Copy(srcData.Scan0 + y * srcStride, row, 0, width * 4);
+                    for (var x = 0; x < width; x++)
+                    {
+                        var i = x * 4;
+                        var lum = (int)(0.299 * row[i + 2] + 0.587 * row[i + 1] + 0.114 * row[i]);
+                        var stretched = Math.Clamp((lum - low) * 255 / span, 0, 255);
+                        row[i] = (byte)stretched;
+                        row[i + 1] = (byte)stretched;
+                        row[i + 2] = (byte)stretched;
+                        row[i + 3] = 255;
+                    }
+
+                    System.Runtime.InteropServices.Marshal.Copy(row, 0, dstData.Scan0 + y * dstStride, width * 4);
+                }
+            }
+            finally
+            {
+                src.UnlockBits(srcData);
+                result.UnlockBits(dstData);
+            }
+
+            return result;
+        }
+        finally
+        {
+            if (ownsSrc)
+                src.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Grayscale then adaptive percentile stretch. Caller owns the result.
+    /// </summary>
+    public static Bitmap ToAdaptiveContrastGray(Bitmap source)
+    {
+        using var gray = ToGrayscale(source);
+        return StretchContrast(gray);
+    }
+
+    /// <summary>
     /// Convert to high-contrast grayscale to help OCR on dark terminals / faint text.
+    /// Neon channels are boosted before a fixed stretch. Caller owns the result.
     /// </summary>
     public static Bitmap ToHighContrastGray(Bitmap source)
     {
@@ -82,6 +213,99 @@ public static class ImageHelpers
     }
 
     /// <summary>
+    /// Apply an OCR prep mode. Returns null when mode is <see cref="OcrPrepMode.None"/>
+    /// (caller should use the original bitmap). Otherwise caller owns the returned bitmap.
+    /// </summary>
+    public static Bitmap? ApplyOcrPrep(Bitmap source, OcrPrepMode mode) =>
+        mode switch
+        {
+            OcrPrepMode.Gray => ToGrayscale(source),
+            OcrPrepMode.AdaptiveContrast => ToAdaptiveContrastGray(source),
+            OcrPrepMode.NeonHighContrast => ToHighContrastGray(source),
+            _ => null
+        };
+
+    /// <summary>
+    /// Tile grid size for large-screen OCR: 3×3 on big frames, else 2×2.
+    /// </summary>
+    public static int ChooseOcrTileGrid(int width, int height) =>
+        width >= 2560 || height >= 1440 ? 3 : 2;
+
+    /// <summary>
+    /// Sampled luma low/high percentiles and mean (0–255). Used by stretch and tests.
+    /// </summary>
+    public static (int Low, int High, double Mean) SampleLumaStats(
+        Bitmap source,
+        int lowPercentile = 5,
+        int highPercentile = 95)
+    {
+        var src = EnsureArgb32(source, out var ownsSrc);
+        try
+        {
+            var rect = new Rectangle(0, 0, src.Width, src.Height);
+            var data = src.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                var stride = data.Stride;
+                var row = new byte[Math.Abs(stride)];
+                var hist = new int[256];
+                long sum = 0;
+                var count = 0;
+                // Subsample for speed on large frames.
+                var stepY = Math.Max(1, src.Height / 240);
+                var stepX = Math.Max(1, src.Width / 240);
+
+                for (var y = 0; y < src.Height; y += stepY)
+                {
+                    System.Runtime.InteropServices.Marshal.Copy(data.Scan0 + y * stride, row, 0, src.Width * 4);
+                    for (var x = 0; x < src.Width; x += stepX)
+                    {
+                        var i = x * 4;
+                        var lum = (int)(0.299 * row[i + 2] + 0.587 * row[i + 1] + 0.114 * row[i]);
+                        lum = Math.Clamp(lum, 0, 255);
+                        hist[lum]++;
+                        sum += lum;
+                        count++;
+                    }
+                }
+
+                if (count == 0)
+                    return (0, 255, 0);
+
+                var mean = sum / (double)count;
+                var low = PercentileFromHist(hist, count, lowPercentile);
+                var high = PercentileFromHist(hist, count, highPercentile);
+                if (high <= low)
+                    high = Math.Min(255, low + 1);
+                return (low, high, mean);
+            }
+            finally
+            {
+                src.UnlockBits(data);
+            }
+        }
+        finally
+        {
+            if (ownsSrc)
+                src.Dispose();
+        }
+    }
+
+    private static int PercentileFromHist(int[] hist, int count, int percentile)
+    {
+        var target = Math.Max(1, (int)Math.Ceiling(count * (percentile / 100.0)));
+        var seen = 0;
+        for (var v = 0; v < 256; v++)
+        {
+            seen += hist[v];
+            if (seen >= target)
+                return v;
+        }
+
+        return 255;
+    }
+
+    /// <summary>
     /// Locate regions that look like dark terminals with bright green/amber text,
     /// so small console overlays can be OCR'd without the rest of the desktop noise.
     /// </summary>
@@ -109,9 +333,12 @@ public static class ImageHelpers
                     var b = rowBuf[i];
                     var g = rowBuf[i + 1];
                     var r = rowBuf[i + 2];
-                    // Neon green / amber on near-black
-                    var brightFg = (g > 110 && g >= r + 25 && g >= b + 15) ||
-                                   (r > 120 && g > 80 && b < 70 && r >= g);
+                    // Neon green / amber / cyan / bright white on near-black (dimmer greens too).
+                    var brightFg =
+                        (g > 85 && g >= r + 18 && g >= b + 10) ||
+                        (r > 120 && g > 80 && b < 70 && r >= g) ||
+                        (b > 100 && g > 90 && b >= r + 15) ||
+                        (r > 160 && g > 160 && b > 160 && Math.Min(r, Math.Min(g, b)) > 140);
                     if (!brightFg)
                         continue;
                     hot[cellY, x / cell] = true;
@@ -200,7 +427,7 @@ public static class ImageHelpers
         attributes.SetColorMatrix(matrix);
         g.DrawImage(
             source,
-            new Rectangle(0, 0, source.Width, source.Height),
+            new Rectangle(0, 0, result.Width, result.Height),
             0, 0, source.Width, source.Height,
             GraphicsUnit.Pixel,
             attributes);
@@ -209,7 +436,7 @@ public static class ImageHelpers
 
     /// <summary>
     /// Prepares a bitmap for OCR: downscale to maxWidth, optional upscale, optional invert.
-    /// Caller owns the returned bitmap.
+    /// Caller owns the returned bitmap. Does not mutate <paramref name="source"/>.
     /// </summary>
     public static Bitmap PrepareForOcr(Bitmap source, int maxWidth, int upscalePercent, bool invertColors)
     {
