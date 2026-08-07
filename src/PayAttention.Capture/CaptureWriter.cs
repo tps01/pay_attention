@@ -75,6 +75,93 @@ public sealed class CaptureWriter
         return mediaPath;
     }
 
+    /// <summary>
+    /// Creates a per-event sequence folder, writes pre-trigger buffered stills and the
+    /// trigger-moment frame. Returns the folder path. Caller may append post-trigger frames.
+    /// </summary>
+    public string WriteScreenshotSequence(
+        IReadOnlyList<BufferedFrame> preFrames,
+        Bitmap triggerFrame,
+        CaptureSidecar sidecar,
+        string captureDirectory,
+        ScreenshotFormat format = ScreenshotFormat.Jpeg,
+        int jpegQuality = 85,
+        bool saveJson = false)
+    {
+        Directory.CreateDirectory(captureDirectory);
+        var stamp = sidecar.Timestamp.ToLocalTime().ToString("yyyyMMdd_HHmmss_fff");
+        var safe = Sanitize(sidecar.TriggerText);
+        var folderName = $"{stamp}_{safe}_sequence";
+        var folder = Path.Combine(captureDirectory, folderName);
+        Directory.CreateDirectory(folder);
+
+        var triggerTime = sidecar.Timestamp;
+        foreach (var frame in preFrames.OrderBy(f => f.Timestamp))
+        {
+            var offsetSec = (int)Math.Round((triggerTime - frame.Timestamp).TotalSeconds);
+            if (offsetSec < 0)
+                offsetSec = 0;
+            // Skip a duplicate of the trigger instant; trigger frame is written as t+000.
+            if (offsetSec == 0)
+                continue;
+
+            var path = Path.Combine(folder, SequenceFileName(-offsetSec, format));
+            WriteJpegBytesOrBitmap(path, frame.JpegBytes, format, jpegQuality);
+        }
+
+        var triggerPath = Path.Combine(folder, SequenceFileName(0, format));
+        if (format == ScreenshotFormat.Png)
+            ImageHelpers.SavePng(triggerFrame, triggerPath);
+        else
+            ImageHelpers.SaveJpeg(triggerFrame, triggerPath, jpegQuality);
+
+        sidecar.CaptureFile = folderName;
+        sidecar.ScreenshotFile = Path.GetFileName(triggerPath);
+
+        if (saveJson)
+            File.WriteAllText(Path.Combine(folder, "sidecar.json"), JsonSerializer.Serialize(sidecar, JsonDefaults.Options));
+
+        return folder;
+    }
+
+    public void WriteSequenceStill(
+        string sequenceFolder,
+        DateTimeOffset triggerTime,
+        DateTimeOffset frameTime,
+        Bitmap bitmap,
+        ScreenshotFormat format = ScreenshotFormat.Jpeg,
+        int jpegQuality = 85)
+    {
+        Directory.CreateDirectory(sequenceFolder);
+        var offsetSec = (int)Math.Round((frameTime - triggerTime).TotalSeconds);
+        var path = Path.Combine(sequenceFolder, SequenceFileName(offsetSec, format));
+        if (format == ScreenshotFormat.Png)
+            ImageHelpers.SavePng(bitmap, path);
+        else
+            ImageHelpers.SaveJpeg(bitmap, path, jpegQuality);
+    }
+
+    private static string SequenceFileName(int offsetSeconds, ScreenshotFormat format)
+    {
+        var ext = format == ScreenshotFormat.Png ? ".png" : ".jpg";
+        var abs = Math.Abs(offsetSeconds);
+        return offsetSeconds < 0 ? $"t-{abs:000}{ext}" : $"t+{abs:000}{ext}";
+    }
+
+    private static void WriteJpegBytesOrBitmap(string path, byte[] jpegBytes, ScreenshotFormat format, int jpegQuality)
+    {
+        if (format == ScreenshotFormat.Jpeg)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, jpegBytes);
+            return;
+        }
+
+        using var ms = new MemoryStream(jpegBytes);
+        using var bmp = new Bitmap(ms);
+        ImageHelpers.SavePng(bmp, path);
+    }
+
     private static string Sanitize(string text)
     {
         if (string.IsNullOrWhiteSpace(text))

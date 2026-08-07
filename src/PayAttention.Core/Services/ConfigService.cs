@@ -68,6 +68,28 @@ public sealed class ConfigService
         File.WriteAllText(ConfigPath, json);
     }
 
+    public void ExportTo(string path, AppConfig config)
+    {
+        Normalize(config);
+        var json = JsonSerializer.Serialize(config, JsonDefaults.Options);
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
+        File.WriteAllText(path, json);
+    }
+
+    public AppConfig ImportFrom(string path)
+    {
+        if (!File.Exists(path))
+            throw new FileNotFoundException("Config file not found.", path);
+
+        var json = File.ReadAllText(path);
+        var config = JsonSerializer.Deserialize<AppConfig>(json, JsonDefaults.Options)
+            ?? throw new InvalidOperationException("Config file did not contain a valid configuration.");
+        Normalize(config);
+        return config;
+    }
+
     private AppConfig CreateDefault()
     {
         return new AppConfig
@@ -93,6 +115,9 @@ public sealed class ConfigService
         config.RecordJpegQuality = Math.Clamp(config.RecordJpegQuality, 40, 95);
         config.OcrMaxWidth = Math.Clamp(config.OcrMaxWidth, 1600, 3840);
         config.OcrUpscalePercent = Math.Clamp(config.OcrUpscalePercent, 100, 400);
+        config.SequenceIntervalSeconds = Math.Clamp(config.SequenceIntervalSeconds, 1, 30);
+        config.SequenceBeforeSeconds = Math.Clamp(config.SequenceBeforeSeconds, 0, 60);
+        config.SequenceAfterSeconds = Math.Clamp(config.SequenceAfterSeconds, 0, 60);
         config.RetentionMaxAgeDays = Math.Clamp(config.RetentionMaxAgeDays, 0, 3650);
         config.RetentionMaxFiles = Math.Clamp(config.RetentionMaxFiles, 0, 100_000);
         config.Triggers ??= [];

@@ -15,11 +15,20 @@ from pay_attention_logic import (
     RECORD_JPEG_QUALITY_MAX,
     RECORD_JPEG_QUALITY_MIN,
     SCREENSHOT_FORMAT_DEFAULT,
+    SEQUENCE_AFTER_DEFAULT,
+    SEQUENCE_BEFORE_AFTER_MAX,
+    SEQUENCE_BEFORE_AFTER_MIN,
+    SEQUENCE_BEFORE_DEFAULT,
+    SEQUENCE_INTERVAL_DEFAULT,
+    SEQUENCE_INTERVAL_MAX,
+    SEQUENCE_INTERVAL_MIN,
     SAMPLE_TRIGGERS_DEFAULT,
     START_MONITORING_ON_LAUNCH_DEFAULT,
     clamp_ocr_max_width,
     clamp_ocr_upscale,
     clamp_record_jpeg_quality,
+    clamp_sequence_before_after,
+    clamp_sequence_interval,
 )
 
 
@@ -53,6 +62,16 @@ def test_recording_defaults():
     assert SCREENSHOT_FORMAT_DEFAULT == "jpeg"
 
 
+def test_sequence_defaults():
+    assert SEQUENCE_INTERVAL_DEFAULT == 3
+    assert SEQUENCE_INTERVAL_MIN == 1
+    assert SEQUENCE_INTERVAL_MAX == 30
+    assert SEQUENCE_BEFORE_DEFAULT == 60
+    assert SEQUENCE_AFTER_DEFAULT == 60
+    assert SEQUENCE_BEFORE_AFTER_MIN == 0
+    assert SEQUENCE_BEFORE_AFTER_MAX == 60
+
+
 def test_sample_triggers_disabled_by_default():
     assert len(SAMPLE_TRIGGERS_DEFAULT) == 2
     assert all(t["enabled"] is False for t in SAMPLE_TRIGGERS_DEFAULT)
@@ -78,3 +97,12 @@ def test_record_jpeg_quality_clamp():
     assert clamp_record_jpeg_quality(10) == RECORD_JPEG_QUALITY_MIN
     assert clamp_record_jpeg_quality(70) == 70
     assert clamp_record_jpeg_quality(99) == RECORD_JPEG_QUALITY_MAX
+
+
+def test_sequence_clamps():
+    assert clamp_sequence_interval(0) == SEQUENCE_INTERVAL_MIN
+    assert clamp_sequence_interval(3) == 3
+    assert clamp_sequence_interval(99) == SEQUENCE_INTERVAL_MAX
+    assert clamp_sequence_before_after(-1) == SEQUENCE_BEFORE_AFTER_MIN
+    assert clamp_sequence_before_after(30) == 30
+    assert clamp_sequence_before_after(120) == SEQUENCE_BEFORE_AFTER_MAX

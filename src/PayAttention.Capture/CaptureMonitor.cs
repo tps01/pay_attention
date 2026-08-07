@@ -25,6 +25,7 @@ public sealed class CaptureMonitor : IDisposable
     private readonly CaptureWriter _writer = new();
     private readonly DebounceTracker _debounce = new();
     private readonly FrameRingBuffer _ringBuffer;
+    private readonly FrameRingBuffer _sequenceRing;
     private readonly AppLogger _logger;
     private readonly object _configLock = new();
 
@@ -41,6 +42,9 @@ public sealed class CaptureMonitor : IDisposable
         _ringBuffer = new FrameRingBuffer(
             TimeSpan.FromSeconds(_config.RecordBufferSeconds),
             _config.RecordFps);
+        _sequenceRing = new FrameRingBuffer(
+            TimeSpan.FromSeconds(_config.SequenceBeforeSeconds),
+            TimeSpan.FromSeconds(_config.SequenceIntervalSeconds));
     }
 
     public bool IsRunning => _loopTask is { IsCompleted: false };
@@ -58,9 +62,14 @@ public sealed class CaptureMonitor : IDisposable
             _ringBuffer.Configure(
                 TimeSpan.FromSeconds(_config.RecordBufferSeconds),
                 _config.RecordFps);
+            _sequenceRing.Configure(
+                TimeSpan.FromSeconds(_config.SequenceBeforeSeconds),
+                TimeSpan.FromSeconds(_config.SequenceIntervalSeconds));
 
             if (!_config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Record))
                 _ringBuffer.Clear();
+            if (!_config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Sequence))
+                _sequenceRing.Clear();
         }
     }
 
@@ -102,6 +111,7 @@ public sealed class CaptureMonitor : IDisposable
         _cts = null;
         _loopTask = null;
         _ringBuffer.Clear();
+        _sequenceRing.Clear();
         _debounce.Reset();
         RaiseStatus("Stopped", "Monitoring stopped.");
         _logger.Info("Monitoring stopped.");
@@ -137,9 +147,13 @@ public sealed class CaptureMonitor : IDisposable
                 }
 
                 using var frame = Grab(config);
-                var needsRing = config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Record);
-                if (needsRing)
+                var needsRecordRing = config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Record);
+                if (needsRecordRing)
                     _ringBuffer.TryAdd(frame.Bitmap, frame.Timestamp, config.RecordJpegQuality);
+
+                var needsSequenceRing = config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Sequence);
+                if (needsSequenceRing)
+                    _sequenceRing.TryAdd(frame.Bitmap, frame.Timestamp, config.RecordJpegQuality);
 
                 var text = await RecognizeFrameAsync(config, frame, token).ConfigureAwait(false);
                 var matches = TriggerMatcher.FindMatches(text, config.Triggers);
@@ -372,9 +386,17 @@ public sealed class CaptureMonitor : IDisposable
         var jpegQuality = config.RecordJpegQuality;
         var recordFps = config.RecordFps;
         var recordFormat = config.RecordFormat;
+        var sequenceAfterSeconds = config.SequenceAfterSeconds;
+        var sequenceIntervalSeconds = config.SequenceIntervalSeconds;
+        var triggerTime = frame.Timestamp;
         IReadOnlyList<BufferedFrame>? recordFrames = null;
+        IReadOnlyList<BufferedFrame>? sequenceFrames = null;
         if (action == CaptureAction.Record)
             recordFrames = _ringBuffer.Snapshot();
+        if (action == CaptureAction.Sequence)
+            sequenceFrames = _sequenceRing.Snapshot();
+
+        var cancelToken = _cts?.Token ?? CancellationToken.None;
 
         _ = Task.Run(() =>
         {
@@ -404,14 +426,62 @@ public sealed class CaptureMonitor : IDisposable
                             saveJson);
                     }
                 }
+                else if (action == CaptureAction.Sequence)
+                {
+                    path = _writer.WriteScreenshotSequence(
+                        sequenceFrames ?? Array.Empty<BufferedFrame>(),
+                        clone,
+                        sidecar,
+                        captureDirectory,
+                        screenshotFormat,
+                        jpegQuality,
+                        saveJson);
+
+                    if (sequenceAfterSeconds > 0)
+                    {
+                        var deadline = triggerTime.AddSeconds(sequenceAfterSeconds);
+                        var nextAt = triggerTime.AddSeconds(sequenceIntervalSeconds);
+                        while (DateTimeOffset.UtcNow < deadline && !cancelToken.IsCancellationRequested)
+                        {
+                            var delay = nextAt - DateTimeOffset.UtcNow;
+                            if (delay > TimeSpan.Zero)
+                            {
+                                try
+                                {
+                                    Task.Delay(delay, cancelToken).GetAwaiter().GetResult();
+                                }
+                                catch (OperationCanceledException)
+                                {
+                                    break;
+                                }
+                            }
+
+                            if (cancelToken.IsCancellationRequested)
+                                break;
+
+                            using var postFrame = Grab(config);
+                            _writer.WriteSequenceStill(
+                                path,
+                                triggerTime,
+                                postFrame.Timestamp,
+                                postFrame.Bitmap,
+                                screenshotFormat,
+                                jpegQuality);
+                            nextAt = nextAt.AddSeconds(sequenceIntervalSeconds);
+                        }
+                    }
+                }
                 else
                 {
                     path = _writer.WriteScreenshot(
                         clone, sidecar, captureDirectory, screenshotFormat, jpegQuality, saveJson);
                 }
 
+                var displayName = action == CaptureAction.Sequence
+                    ? Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+                    : Path.GetFileName(path);
                 _logger.Info($"Trigger '{triggerText}' fired ({sidecar.Action}) -> {path}");
-                RaiseStatus("Triggered", $"{triggerText} → {Path.GetFileName(path)}");
+                RaiseStatus("Triggered", $"{triggerText} → {displayName}");
                 TriggerFired?.Invoke(this, new TriggerFiredEventArgs
                 {
                     TriggerText = triggerText,
@@ -428,7 +498,7 @@ public sealed class CaptureMonitor : IDisposable
             {
                 clone.Dispose();
             }
-        });
+        }, cancelToken);
     }
 
     private void RaiseStatus(string status, string? detail)
@@ -448,5 +518,6 @@ public sealed class CaptureMonitor : IDisposable
         _disposed = true;
         Stop();
         _ringBuffer.Dispose();
+        _sequenceRing.Dispose();
     }
 }

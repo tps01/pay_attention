@@ -13,6 +13,9 @@ public sealed class AppConfig
     public CaptureScope CaptureScope { get; set; } = CaptureScope.Monitor;
     public bool OcrInvertColors { get; set; } = false;
     public int OcrUpscalePercent { get; set; } = 100;
+    public int SequenceIntervalSeconds { get; set; } = 3;
+    public int SequenceBeforeSeconds { get; set; } = 60;
+    public int SequenceAfterSeconds { get; set; } = 60;
     public string CaptureDirectory { get; set; } = string.Empty;
     public MonitorSelection MonitorSelection { get; set; } = MonitorSelection.Primary;
     public int SpecificMonitorIndex { get; set; }

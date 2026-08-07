@@ -3,7 +3,8 @@ namespace PayAttention.Core.Models;
 public enum CaptureAction
 {
     Screenshot = 0,
-    Record = 1
+    Record = 1,
+    Sequence = 2
 }
 
 public enum MatchMode

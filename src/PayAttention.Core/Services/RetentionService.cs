@@ -9,55 +9,110 @@ public static class RetentionService
         if (!Directory.Exists(captureDirectory))
             return 0;
 
-        var files = Directory.EnumerateFiles(captureDirectory)
-            .Where(f => CaptureExtensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase))
-            .Select(f => new FileInfo(f))
-            .Where(f => f.Exists)
-            .OrderByDescending(f => f.CreationTimeUtc)
-            .ToList();
+        // Top-level capture files + per-event *_sequence folders (each folder is one unit).
+        var units = new List<RetentionUnit>();
+
+        foreach (var file in Directory.EnumerateFiles(captureDirectory)
+                     .Where(f => CaptureExtensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase)))
+        {
+            try
+            {
+                var info = new FileInfo(file);
+                if (info.Exists)
+                    units.Add(RetentionUnit.ForFile(info));
+            }
+            catch
+            {
+                // skip inaccessible
+            }
+        }
+
+        foreach (var dir in Directory.EnumerateDirectories(captureDirectory))
+        {
+            if (!Path.GetFileName(dir).EndsWith("_sequence", StringComparison.OrdinalIgnoreCase))
+                continue;
+            try
+            {
+                var info = new DirectoryInfo(dir);
+                if (info.Exists)
+                    units.Add(RetentionUnit.ForDirectory(info));
+            }
+            catch
+            {
+                // skip inaccessible
+            }
+        }
+
+        units = units.OrderByDescending(u => u.CreatedUtc).ToList();
 
         var deleted = 0;
         var cutoff = maxAgeDays > 0
             ? DateTime.UtcNow.AddDays(-maxAgeDays)
             : (DateTime?)null;
 
-        foreach (var file in files.ToList())
+        foreach (var unit in units.ToList())
         {
-            var tooOld = cutoff.HasValue && file.CreationTimeUtc < cutoff.Value;
+            var tooOld = cutoff.HasValue && unit.CreatedUtc < cutoff.Value;
             if (!tooOld)
                 continue;
 
-            try
+            if (TryDelete(unit, logger))
             {
-                file.Delete();
                 deleted++;
-                files.Remove(file);
-            }
-            catch (Exception ex)
-            {
-                logger?.Warn($"Failed to delete old capture {file.Name}: {ex.Message}");
+                units.Remove(unit);
             }
         }
 
-        if (maxFiles > 0 && files.Count > maxFiles)
+        if (maxFiles > 0 && units.Count > maxFiles)
         {
-            foreach (var file in files.Skip(maxFiles).ToList())
+            foreach (var unit in units.Skip(maxFiles).ToList())
             {
-                try
-                {
-                    file.Delete();
+                if (TryDelete(unit, logger))
                     deleted++;
-                }
-                catch (Exception ex)
-                {
-                    logger?.Warn($"Failed to delete excess capture {file.Name}: {ex.Message}");
-                }
             }
         }
 
         if (deleted > 0)
-            logger?.Info($"Retention removed {deleted} file(s).");
+            logger?.Info($"Retention removed {deleted} item(s).");
 
         return deleted;
+    }
+
+    private static bool TryDelete(RetentionUnit unit, AppLogger? logger)
+    {
+        try
+        {
+            if (unit.IsDirectory)
+                Directory.Delete(unit.Path, recursive: true);
+            else
+                File.Delete(unit.Path);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger?.Warn($"Failed to delete capture {Path.GetFileName(unit.Path)}: {ex.Message}");
+            return false;
+        }
+    }
+
+    private sealed class RetentionUnit
+    {
+        public required string Path { get; init; }
+        public required DateTime CreatedUtc { get; init; }
+        public required bool IsDirectory { get; init; }
+
+        public static RetentionUnit ForFile(FileInfo info) => new()
+        {
+            Path = info.FullName,
+            CreatedUtc = info.CreationTimeUtc,
+            IsDirectory = false
+        };
+
+        public static RetentionUnit ForDirectory(DirectoryInfo info) => new()
+        {
+            Path = info.FullName,
+            CreatedUtc = info.CreationTimeUtc,
+            IsDirectory = true
+        };
     }
 }

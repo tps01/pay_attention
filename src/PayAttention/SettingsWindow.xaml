@@ -8,6 +8,8 @@
         Background="#F4F6F8">
   <DockPanel Margin="16">
     <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+      <Button Content="Import…" Width="90" Margin="0,0,8,0" Click="Import_Click" />
+      <Button Content="Export…" Width="90" Margin="0,0,8,0" Click="Export_Click" />
       <Button Content="Open captures folder" Width="150" Margin="0,0,8,0" Click="OpenCaptures_Click" />
       <Button Content="Save" Width="90" Margin="0,0,8,0" IsDefault="True" Click="Save_Click" />
       <Button Content="Close" Width="90" IsCancel="True" Click="Close_Click" />
@@ -16,7 +18,7 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto">
       <StackPanel>
         <TextBlock Text="pay_attention" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4" />
-        <TextBlock Text="Capture screenshots or short recordings when trigger text appears on screen."
+        <TextBlock Text="Capture screenshots, screenshot sequences, or short recordings when trigger text appears on screen."
                    TextWrapping="Wrap" Opacity="0.75" Margin="0,0,0,16" />
 
         <GroupBox Header="Triggers" Padding="10" Margin="0,0,0,12">
@@ -36,7 +38,7 @@
                 <DataGridTextColumn Header="Text" Binding="{Binding Text, UpdateSourceTrigger=PropertyChanged}" Width="*" />
                 <DataGridComboBoxColumn Header="Match" SelectedItemBinding="{Binding Match, UpdateSourceTrigger=PropertyChanged}" Width="100"
                                         x:Name="MatchColumn" />
-                <DataGridComboBoxColumn Header="Action" SelectedItemBinding="{Binding Action, UpdateSourceTrigger=PropertyChanged}" Width="110"
+                <DataGridComboBoxColumn Header="Action" SelectedItemBinding="{Binding Action, UpdateSourceTrigger=PropertyChanged}" Width="120"
                                         x:Name="ActionColumn" />
               </DataGrid.Columns>
             </DataGrid>
@@ -119,6 +121,35 @@
                        ToolTip="40–95. Lower = smaller files, more artifacts. Used for the ring buffer and AVI." />
             <TextBox x:Name="RecordJpegQualityBox" Grid.Row="3" Grid.Column="1" Width="120" HorizontalAlignment="Left"
                      ToolTip="40–95. Lower = smaller files, more artifacts. Used for the ring buffer and AVI." />
+          </Grid>
+        </GroupBox>
+
+        <GroupBox Header="Screenshot sequence" Padding="10" Margin="0,0,0,12">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="180" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Spacing (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
+                       ToolTip="Seconds between stills in a sequence (1–30)." />
+            <TextBox x:Name="SequenceIntervalBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                     ToolTip="Seconds between stills in a sequence (1–30)." />
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="Before trigger (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
+                       ToolTip="How far back to keep stills before the trigger (0–60)." />
+            <TextBox x:Name="SequenceBeforeBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                     ToolTip="How far back to keep stills before the trigger (0–60)." />
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="After trigger (seconds)" VerticalAlignment="Center"
+                       ToolTip="How long to keep capturing stills after the trigger (0–60)." />
+            <TextBox x:Name="SequenceAfterBox" Grid.Row="2" Grid.Column="1" Width="120" HorizontalAlignment="Left"
+                     ToolTip="How long to keep capturing stills after the trigger (0–60)." />
           </Grid>
         </GroupBox>
 

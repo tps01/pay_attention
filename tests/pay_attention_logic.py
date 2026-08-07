@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, Literal, Optional
 
 MatchMode = Literal["contains", "exact", "regex"]
-CaptureAction = Literal["screenshot", "record"]
+CaptureAction = Literal["screenshot", "record", "sequence"]
 
 # Defaults mirrored from AppConfig / ConfigService.Normalize / CreateDefault
 START_MONITORING_ON_LAUNCH_DEFAULT = False
@@ -33,6 +33,13 @@ RECORD_JPEG_QUALITY_DEFAULT = 70
 RECORD_JPEG_QUALITY_MIN = 40
 RECORD_JPEG_QUALITY_MAX = 95
 SCREENSHOT_FORMAT_DEFAULT = "jpeg"
+SEQUENCE_INTERVAL_DEFAULT = 3
+SEQUENCE_INTERVAL_MIN = 1
+SEQUENCE_INTERVAL_MAX = 30
+SEQUENCE_BEFORE_DEFAULT = 60
+SEQUENCE_AFTER_DEFAULT = 60
+SEQUENCE_BEFORE_AFTER_MIN = 0
+SEQUENCE_BEFORE_AFTER_MAX = 60
 SAMPLE_TRIGGERS_DEFAULT = (
     {"text": "Error", "match": "contains", "action": "screenshot", "enabled": False},
     {"text": "Exception", "match": "contains", "action": "record", "enabled": False},
@@ -206,3 +213,11 @@ def clamp_ocr_upscale(value: int) -> int:
 def clamp_record_jpeg_quality(value: int) -> int:
     """Mirror of ConfigService.Normalize RecordJpegQuality clamp."""
     return max(RECORD_JPEG_QUALITY_MIN, min(RECORD_JPEG_QUALITY_MAX, value))
+
+
+def clamp_sequence_interval(value: int) -> int:
+    return max(SEQUENCE_INTERVAL_MIN, min(SEQUENCE_INTERVAL_MAX, value))
+
+
+def clamp_sequence_before_after(value: int) -> int:
+    return max(SEQUENCE_BEFORE_AFTER_MIN, min(SEQUENCE_BEFORE_AFTER_MAX, value))

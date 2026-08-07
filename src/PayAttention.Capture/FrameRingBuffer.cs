@@ -15,7 +15,7 @@ public sealed class FrameRingBuffer : IDisposable
     private readonly LinkedList<BufferedFrame> _frames = new();
     private readonly object _lock = new();
     private TimeSpan _capacity;
-    private int _targetFps;
+    private TimeSpan _minGap;
     private DateTimeOffset _lastAccepted = DateTimeOffset.MinValue;
 
     public FrameRingBuffer(TimeSpan capacity, int targetFps)
@@ -23,12 +23,23 @@ public sealed class FrameRingBuffer : IDisposable
         Configure(capacity, targetFps);
     }
 
+    public FrameRingBuffer(TimeSpan capacity, TimeSpan minGap)
+    {
+        Configure(capacity, minGap);
+    }
+
     public void Configure(TimeSpan capacity, int targetFps)
+    {
+        var fps = Math.Clamp(targetFps, 1, 30);
+        Configure(capacity, TimeSpan.FromSeconds(1.0 / fps));
+    }
+
+    public void Configure(TimeSpan capacity, TimeSpan minGap)
     {
         lock (_lock)
         {
-            _capacity = capacity;
-            _targetFps = Math.Clamp(targetFps, 1, 30);
+            _capacity = capacity < TimeSpan.Zero ? TimeSpan.Zero : capacity;
+            _minGap = minGap < TimeSpan.FromMilliseconds(100) ? TimeSpan.FromMilliseconds(100) : minGap;
             TrimUnlocked(DateTimeOffset.UtcNow);
         }
     }
@@ -46,8 +57,10 @@ public sealed class FrameRingBuffer : IDisposable
     {
         lock (_lock)
         {
-            var minGap = TimeSpan.FromSeconds(1.0 / _targetFps);
-            if (timestamp - _lastAccepted < minGap)
+            if (_capacity <= TimeSpan.Zero)
+                return;
+
+            if (timestamp - _lastAccepted < _minGap)
                 return;
 
             var jpeg = ImageHelpers.EncodeJpeg(bitmap, jpegQuality);
@@ -73,6 +86,12 @@ public sealed class FrameRingBuffer : IDisposable
 
     private void TrimUnlocked(DateTimeOffset now)
     {
+        if (_capacity <= TimeSpan.Zero)
+        {
+            _frames.Clear();
+            return;
+        }
+
         var cutoff = now - _capacity;
         while (_frames.First is not null && _frames.First.Value.Timestamp < cutoff)
             _frames.RemoveFirst();

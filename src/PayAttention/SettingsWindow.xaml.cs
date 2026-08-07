@@ -32,16 +32,25 @@ public partial class SettingsWindow : Window
         RecordFormatBox.ItemsSource = Enum.GetValues(typeof(RecordFormat));
         ScreenshotFormatBox.ItemsSource = Enum.GetValues(typeof(ScreenshotFormat));
 
-        _triggers = new ObservableCollection<TriggerConfig>(
-            config.Triggers.Select(t => new TriggerConfig
+        _triggers = new ObservableCollection<TriggerConfig>();
+        TriggersGrid.ItemsSource = _triggers;
+        ApplyConfigToUi(config);
+    }
+
+    private void ApplyConfigToUi(AppConfig config)
+    {
+        _triggers.Clear();
+        foreach (var t in config.Triggers)
+        {
+            _triggers.Add(new TriggerConfig
             {
                 Id = t.Id,
                 Text = t.Text,
                 Match = t.Match,
                 Action = t.Action,
                 Enabled = t.Enabled
-            }));
-        TriggersGrid.ItemsSource = _triggers;
+            });
+        }
 
         CaptureDirectoryBox.Text = config.CaptureDirectory;
         OcrIntervalBox.Text = config.OcrIntervalMs.ToString();
@@ -51,6 +60,9 @@ public partial class SettingsWindow : Window
         RecordFormatBox.SelectedItem = config.RecordFormat;
         RecordJpegQualityBox.Text = config.RecordJpegQuality.ToString();
         ScreenshotFormatBox.SelectedItem = config.ScreenshotFormat;
+        SequenceIntervalBox.Text = config.SequenceIntervalSeconds.ToString();
+        SequenceBeforeBox.Text = config.SequenceBeforeSeconds.ToString();
+        SequenceAfterBox.Text = config.SequenceAfterSeconds.ToString();
         OcrMaxWidthBox.Text = config.OcrMaxWidth.ToString();
         OcrUpscaleBox.Text = config.OcrUpscalePercent.ToString();
         OcrInvertBox.IsChecked = config.OcrInvertColors;
@@ -137,6 +149,76 @@ public partial class SettingsWindow : Window
         });
     }
 
+    private void Export_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            TriggersGrid.CommitEdit(DataGridEditingUnit.Cell, true);
+            TriggersGrid.CommitEdit(DataGridEditingUnit.Row, true);
+
+            var dialog = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "Export pay_attention config",
+                Filter = "JSON config (*.json)|*.json|All files (*.*)|*.*",
+                DefaultExt = ".json",
+                FileName = "pay_attention_config.json",
+                AddExtension = true
+            };
+
+            if (dialog.ShowDialog() != true)
+                return;
+
+            var config = BuildConfigFromUi();
+            _configService.ExportTo(dialog.FileName, config);
+            _logger.Info($"Config exported to {dialog.FileName}");
+            MessageBox.Show("Config exported.", "pay_attention", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Failed to export config", ex);
+            MessageBox.Show(ex.Message, "pay_attention", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void Import_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "Import pay_attention config",
+                Filter = "JSON config (*.json)|*.json|All files (*.*)|*.*",
+                DefaultExt = ".json",
+                CheckFileExists = true
+            };
+
+            if (dialog.ShowDialog() != true)
+                return;
+
+            var confirm = MessageBox.Show(
+                "Import will replace your current settings and triggers. Continue?",
+                "pay_attention",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (confirm != MessageBoxResult.Yes)
+                return;
+
+            var imported = _configService.ImportFrom(dialog.FileName);
+            ApplyConfigToUi(imported);
+            _configService.Save(imported);
+            AutostartService.SetEnabled(imported.StartWithWindows, Environment.ProcessPath ?? string.Empty);
+            _monitor.UpdateConfig(imported);
+            ConfigSaved?.Invoke(this, imported);
+            _logger.Info($"Config imported from {dialog.FileName}");
+            MessageBox.Show("Config imported and saved.", "pay_attention", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Failed to import config", ex);
+            MessageBox.Show(ex.Message, "pay_attention", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void Save_Click(object sender, RoutedEventArgs e)
     {
         try
@@ -169,6 +251,12 @@ public partial class SettingsWindow : Window
             throw new InvalidOperationException("Record buffer seconds must be an integer.");
         if (!int.TryParse(RecordFpsBox.Text, out var fps))
             throw new InvalidOperationException("Record FPS must be an integer.");
+        if (!int.TryParse(SequenceIntervalBox.Text, out var sequenceInterval))
+            throw new InvalidOperationException("Sequence spacing must be an integer.");
+        if (!int.TryParse(SequenceBeforeBox.Text, out var sequenceBefore))
+            throw new InvalidOperationException("Sequence before seconds must be an integer.");
+        if (!int.TryParse(SequenceAfterBox.Text, out var sequenceAfter))
+            throw new InvalidOperationException("Sequence after seconds must be an integer.");
         if (!int.TryParse(RetentionDaysBox.Text, out var retentionDays))
             throw new InvalidOperationException("Retention days must be an integer.");
         if (!int.TryParse(RetentionFilesBox.Text, out var retentionFiles))
@@ -195,6 +283,9 @@ public partial class SettingsWindow : Window
             RecordFormat = recordFormat,
             RecordJpegQuality = jpegQuality,
             ScreenshotFormat = screenshotFormat,
+            SequenceIntervalSeconds = sequenceInterval,
+            SequenceBeforeSeconds = sequenceBefore,
+            SequenceAfterSeconds = sequenceAfter,
             OcrMaxWidth = ocrMaxWidth,
             CaptureScope = captureScope,
             OcrInvertColors = OcrInvertBox.IsChecked == true,
