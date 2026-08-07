@@ -23,7 +23,7 @@ public sealed class CaptureMonitor : IDisposable
     private readonly ScreenGrabber _grabber = new();
     private readonly OcrService _ocr = new();
     private readonly CaptureWriter _writer = new();
-    private readonly DebounceTracker _debounce = new();
+    private readonly TriggerFireGate _fireGate = new();
     private readonly FrameRingBuffer _ringBuffer;
     private readonly FrameRingBuffer _sequenceRing;
     private readonly AppLogger _logger;
@@ -112,7 +112,7 @@ public sealed class CaptureMonitor : IDisposable
         _loopTask = null;
         _ringBuffer.Clear();
         _sequenceRing.Clear();
-        _debounce.Reset();
+        _fireGate.Reset();
         RaiseStatus("Stopped", "Monitoring stopped.");
         _logger.Info("Monitoring stopped.");
     }
@@ -161,7 +161,8 @@ public sealed class CaptureMonitor : IDisposable
                 foreach (var match in matches)
                 {
                     var key = $"{match.Trigger.Id}:{match.MatchedPortion}";
-                    if (_debounce.ShouldFire(key, TimeSpan.FromSeconds(config.DebounceSeconds)))
+                    var fingerprint = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
+                    if (_fireGate.ShouldFire(key, TimeSpan.FromSeconds(config.DebounceSeconds), fingerprint))
                         QueueCaptureWrite(config, frame, match, text);
                 }
 

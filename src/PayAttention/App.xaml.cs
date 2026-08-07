@@ -1,4 +1,6 @@
 using System.Drawing;
+using System.Reflection;
+using System.Threading;
 using System.Windows;
 using System.Windows.Forms;
 using PayAttention.Capture;
@@ -11,11 +13,13 @@ namespace PayAttention;
 
 public partial class App : Application
 {
+    private static Mutex? _instanceMutex;
     private ConfigService _configService = null!;
     private AppLogger _logger = null!;
     private AppConfig _config = null!;
     private CaptureMonitor _monitor = null!;
     private NotifyIcon? _tray;
+    private Icon? _trayIcon;
     private SettingsWindow? _settingsWindow;
     private HotkeyService? _hotkey;
     private ToolStripMenuItem? _startStopItem;
@@ -27,9 +31,35 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        _instanceMutex = new Mutex(true, @"Local\pay_attention_single_instance", out var createdNew);
+        if (!createdNew)
+        {
+            MessageBox.Show(
+                "pay_attention is already running (check the system tray).",
+                "pay_attention",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            Shutdown();
+            return;
+        }
+
         _configService = new ConfigService();
         _logger = new AppLogger(_configService.LogDirectory);
-        _config = _configService.Load();
+        var load = _configService.LoadDetailed();
+        _config = load.Config;
+
+        if (load.ResetToDefaults)
+        {
+            var backupNote = string.IsNullOrEmpty(load.CorruptBackupPath)
+                ? ""
+                : $"\n\nA backup of the old file was saved as:\n{load.CorruptBackupPath}";
+            MessageBox.Show(
+                "Settings could not be read, so defaults were restored." + backupNote,
+                "pay_attention",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            _logger.Warn("Config reset to defaults after load failure. Backup: " + (load.CorruptBackupPath ?? "(none)"));
+        }
 
         AutostartService.SetEnabled(_config.StartWithWindows, Environment.ProcessPath ?? string.Empty);
 
@@ -54,7 +84,7 @@ public partial class App : Application
         };
 
         BuildTray();
-        RegisterHotkey();
+        RegisterHotkey(showErrors: true);
 
         if (!_monitor.OcrAvailable)
         {
@@ -92,16 +122,53 @@ public partial class App : Application
         menu.Items.Add(new ToolStripMenuItem("Settings...", null, (_, _) => OpenSettings()));
         menu.Items.Add(new ToolStripMenuItem("Open captures folder", null, (_, _) => OpenCaptures()));
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(new ToolStripMenuItem("About...", null, (_, _) => ShowAbout()));
         menu.Items.Add(new ToolStripMenuItem("Exit", null, (_, _) => ExitApp()));
 
+        _trayIcon = LoadAppIcon();
         _tray = new NotifyIcon
         {
-            Icon = SystemIcons.Information,
+            Icon = _trayIcon,
             Visible = true,
             ContextMenuStrip = menu,
             Text = "pay_attention"
         };
         _tray.DoubleClick += (_, _) => OpenSettings();
+    }
+
+    private static Icon LoadAppIcon()
+    {
+        try
+        {
+            var path = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(path))
+            {
+                var icon = Icon.ExtractAssociatedIcon(path);
+                if (icon is not null)
+                    return icon;
+            }
+        }
+        catch
+        {
+            // fall through
+        }
+
+        return (Icon)SystemIcons.Application.Clone();
+    }
+
+    private static void ShowAbout()
+    {
+        var version = Assembly.GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion
+            ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)
+            ?? "1.0.0";
+
+        MessageBox.Show(
+            $"pay_attention\nVersion {version}\n\nWindows text-triggered screen logger.",
+            "About pay_attention",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private void ToggleMonitoring()
@@ -147,7 +214,7 @@ public partial class App : Application
         _settingsWindow.ConfigSaved += (_, cfg) =>
         {
             _config = cfg;
-            RegisterHotkey();
+            RegisterHotkey(showErrors: true);
             UpdateTrayText();
         };
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;
@@ -172,7 +239,7 @@ public partial class App : Application
         }
     }
 
-    private void RegisterHotkey()
+    private void RegisterHotkey(bool showErrors)
     {
         _hotkey?.Dispose();
         _hotkey = null;
@@ -197,6 +264,14 @@ public partial class App : Application
         catch (Exception ex)
         {
             _logger.Warn($"Could not register hotkey '{_config.PauseHotkey}': {ex.Message}");
+            if (showErrors)
+            {
+                MessageBox.Show(
+                    $"Could not register pause hotkey '{_config.PauseHotkey}'.\n{ex.Message}\n\nChange it in Settings if needed.",
+                    "pay_attention",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
         }
     }
 
@@ -221,7 +296,7 @@ public partial class App : Application
         _hotkey?.Dispose();
         _hotkey = null;
 
-        _monitor.Dispose();
+        try { _monitor?.Dispose(); } catch { /* ignore */ }
 
         if (_tray is not null)
         {
@@ -229,5 +304,16 @@ public partial class App : Application
             _tray.Dispose();
             _tray = null;
         }
+
+        _trayIcon?.Dispose();
+        _trayIcon = null;
+
+        try
+        {
+            _instanceMutex?.ReleaseMutex();
+            _instanceMutex?.Dispose();
+        }
+        catch { /* ignore */ }
+        _instanceMutex = null;
     }
 }

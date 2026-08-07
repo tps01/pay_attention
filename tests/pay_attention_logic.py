@@ -2,7 +2,7 @@
 
 Source of truth:
 - src/PayAttention.Core/Services/TriggerMatcher.cs
-- src/PayAttention.Core/Services/DebounceTracker.cs
+- src/PayAttention.Capture/TriggerFireGate.cs (time portion mirrored as DebounceTracker below)
 - src/PayAttention.Core/Models/AppConfig.cs
 - src/PayAttention.Core/Services/ConfigService.cs
 """
@@ -47,8 +47,7 @@ SEQUENCE_BEFORE_AFTER_MAX = 60
 RETENTION_MAX_AGE_DAYS_DEFAULT = 14
 RETENTION_MAX_FILES_DEFAULT = 200
 SAMPLE_TRIGGERS_DEFAULT = (
-    {"text": "Error", "match": "contains", "action": "screenshot", "enabled": False},
-    {"text": "Exception", "match": "contains", "action": "record", "enabled": False},
+    {"text": "PAYATTN_EXAMPLE", "match": "contains", "action": "screenshot", "enabled": False},
 )
 
 
@@ -190,7 +189,7 @@ def find_matches(ocr_text: str, triggers: Iterable[TriggerConfig]) -> list[Trigg
 
 @dataclass
 class DebounceTracker:
-    """Mirror of DebounceTracker (wall-clock based)."""
+    """Time-only gate (mirrors the debounce half of TriggerFireGate)."""
 
     _last_fired: dict[str, float] = field(default_factory=dict)
 

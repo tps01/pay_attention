@@ -40,12 +40,15 @@ Write-Host ""
 Write-Host "Building user guide PDF..."
 & (Join-Path $PSScriptRoot "build-user-guide.ps1")
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "User guide PDF build failed with exit code $LASTEXITCODE"
-    exit $LASTEXITCODE
+    Write-Warning "User guide PDF build failed (exit $LASTEXITCODE). Exe publish succeeded anyway."
 }
 
 $guide = Join-Path $root "publish\PayAttention-UserGuide.pdf"
 Write-Host ""
 Write-Host "Done. Run: $exe ($sizeMb MB)"
-Write-Host "User guide: $guide"
+if (Test-Path $guide) {
+    Write-Host "User guide: $guide"
+} else {
+    Write-Host "User guide: (not built — install Edge or fix build-user-guide.ps1)"
+}
 Write-Host "You can double-click PayAttention.exe or create a shortcut."

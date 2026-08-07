@@ -3,6 +3,13 @@ using PayAttention.Core.Models;
 
 namespace PayAttention.Core.Services;
 
+public sealed class ConfigLoadResult
+{
+    public required AppConfig Config { get; init; }
+    public bool ResetToDefaults { get; init; }
+    public string? CorruptBackupPath { get; init; }
+}
+
 public sealed class ConfigService
 {
     public string AppDataDirectory { get; }
@@ -20,7 +27,9 @@ public sealed class ConfigService
         LogDirectory = Path.Combine(AppDataDirectory, "logs");
     }
 
-    public AppConfig Load()
+    public AppConfig Load() => LoadDetailed().Config;
+
+    public ConfigLoadResult LoadDetailed()
     {
         Directory.CreateDirectory(AppDataDirectory);
         Directory.CreateDirectory(DefaultCaptureDirectory);
@@ -30,7 +39,7 @@ public sealed class ConfigService
         {
             var defaults = CreateDefault();
             Save(defaults);
-            return defaults;
+            return new ConfigLoadResult { Config = defaults };
         }
 
         try
@@ -38,14 +47,14 @@ public sealed class ConfigService
             var json = File.ReadAllText(ConfigPath);
             var config = JsonSerializer.Deserialize<AppConfig>(json, JsonDefaults.Options) ?? CreateDefault();
             Normalize(config);
-            return config;
+            return new ConfigLoadResult { Config = config };
         }
         catch
         {
-            // Preserve the broken file so settings aren't silently destroyed.
+            string? backup = null;
             try
             {
-                var backup = ConfigPath + ".corrupt." + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+                backup = ConfigPath + ".corrupt." + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
                 File.Copy(ConfigPath, backup, overwrite: true);
             }
             catch
@@ -55,7 +64,12 @@ public sealed class ConfigService
 
             var defaults = CreateDefault();
             Save(defaults);
-            return defaults;
+            return new ConfigLoadResult
+            {
+                Config = defaults,
+                ResetToDefaults = true,
+                CorruptBackupPath = backup
+            };
         }
     }
 
@@ -71,7 +85,10 @@ public sealed class ConfigService
     public void ExportTo(string path, AppConfig config)
     {
         Normalize(config);
-        var json = JsonSerializer.Serialize(config, JsonDefaults.Options);
+        // Portable export: do not bake in this machine's absolute capture path.
+        var portable = Clone(config);
+        portable.CaptureDirectory = string.Empty;
+        var json = JsonSerializer.Serialize(portable, JsonDefaults.Options);
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
@@ -86,9 +103,18 @@ public sealed class ConfigService
         var json = File.ReadAllText(path);
         var config = JsonSerializer.Deserialize<AppConfig>(json, JsonDefaults.Options)
             ?? throw new InvalidOperationException("Config file did not contain a valid configuration.");
+        // Always land captures on this machine's default unless the imported path already exists.
+        if (string.IsNullOrWhiteSpace(config.CaptureDirectory) ||
+            !Directory.Exists(config.CaptureDirectory))
+            config.CaptureDirectory = DefaultCaptureDirectory;
         Normalize(config);
         return config;
     }
+
+    private static AppConfig Clone(AppConfig source) =>
+        JsonSerializer.Deserialize<AppConfig>(
+            JsonSerializer.Serialize(source, JsonDefaults.Options),
+            JsonDefaults.Options)!;
 
     private AppConfig CreateDefault()
     {
@@ -97,8 +123,14 @@ public sealed class ConfigService
             CaptureDirectory = DefaultCaptureDirectory,
             Triggers =
             [
-                new TriggerConfig { Text = "Error", Match = MatchMode.Contains, Action = CaptureAction.Screenshot, Enabled = false },
-                new TriggerConfig { Text = "Exception", Match = MatchMode.Contains, Action = CaptureAction.Record, Enabled = false }
+                // Distinctive placeholders — disabled. Avoid common words like "Error".
+                new TriggerConfig
+                {
+                    Text = "PAYATTN_EXAMPLE",
+                    Match = MatchMode.Contains,
+                    Action = CaptureAction.Screenshot,
+                    Enabled = false
+                }
             ]
         };
     }

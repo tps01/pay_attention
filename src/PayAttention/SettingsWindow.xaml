@@ -70,9 +70,9 @@
                      ToolTip="How often to scan. Use 250–500ms for brief serial/terminal messages." />
 
             <TextBlock Grid.Row="2" Grid.Column="0" Text="Debounce (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="Minimum time before the same trigger can fire again." />
+                       ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed." />
             <TextBox x:Name="DebounceBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                     ToolTip="Minimum time before the same trigger can fire again." />
+                     ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed." />
 
             <TextBlock Grid.Row="3" Grid.Column="0" Text="Screenshot format" VerticalAlignment="Center" Margin="0,0,0,8"
                        ToolTip="Jpeg is faster to save (default). Png is lossless." />
@@ -204,7 +204,9 @@
 
             <CheckBox x:Name="StartWithWindowsBox" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Content="Start with Windows" Margin="0,0,0,8" />
             <CheckBox x:Name="StartMonitoringBox" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Content="Start monitoring on launch" Margin="0,0,0,8" />
-            <CheckBox x:Name="DebugJsonBox" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Content="Debug: save JSON sidecar with each capture" Margin="0,0,0,8" />
+            <CheckBox x:Name="DebugJsonBox" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
+                      Content="Debug: save JSON sidecar with each capture" Margin="0,0,0,8"
+                      ToolTip="Writes a .json next to each capture including OCR snippet text. Leave off unless troubleshooting — files can contain secrets." />
 
             <TextBlock Grid.Row="3" Grid.Column="0" Text="Pause hotkey" VerticalAlignment="Center" Margin="0,0,0,8" />
             <TextBox x:Name="HotkeyBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" Width="180" HorizontalAlignment="Left"

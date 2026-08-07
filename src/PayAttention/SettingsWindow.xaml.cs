@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using PayAttention.Capture;
@@ -210,7 +211,11 @@ public partial class SettingsWindow : Window
             _monitor.UpdateConfig(imported);
             ConfigSaved?.Invoke(this, imported);
             _logger.Info($"Config imported from {dialog.FileName}");
-            MessageBox.Show("Config imported and saved.", "pay_attention", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(
+                "Config imported and saved.\n\nCapture folder was set to this PC's default if the imported path was missing.",
+                "pay_attention",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
@@ -228,6 +233,8 @@ public partial class SettingsWindow : Window
 
             var config = BuildConfigFromUi();
             _configService.Save(config);
+            // Reflect clamps / normalized paths back into the form.
+            ApplyConfigToUi(config);
             AutostartService.SetEnabled(config.StartWithWindows, Environment.ProcessPath ?? string.Empty);
             _monitor.UpdateConfig(config);
             ConfigSaved?.Invoke(this, config);
@@ -274,6 +281,28 @@ public partial class SettingsWindow : Window
         var recordFormat = RecordFormatBox.SelectedItem is RecordFormat rf ? rf : RecordFormat.Avi;
         var screenshotFormat = ScreenshotFormatBox.SelectedItem is ScreenshotFormat sf ? sf : ScreenshotFormat.Jpeg;
 
+        var triggers = _triggers.Select(t => new TriggerConfig
+            {
+                Id = t.Id == Guid.Empty ? Guid.NewGuid() : t.Id,
+                Text = t.Text?.Trim() ?? string.Empty,
+                Match = t.Match,
+                Action = t.Action,
+                Enabled = t.Enabled
+            }).Where(t => !string.IsNullOrWhiteSpace(t.Text)).ToList();
+
+        foreach (var trigger in triggers.Where(t => t.Enabled && t.Match == MatchMode.Regex))
+        {
+            try
+            {
+                _ = new Regex(trigger.Text, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new InvalidOperationException(
+                    $"Invalid regex for trigger \"{trigger.Text}\": {ex.Message}");
+            }
+        }
+
         return new AppConfig
         {
             OcrIntervalMs = ocrInterval,
@@ -301,14 +330,7 @@ public partial class SettingsWindow : Window
             PauseHotkey = HotkeyBox.Text.Trim(),
             RetentionMaxAgeDays = retentionDays,
             RetentionMaxFiles = retentionFiles,
-            Triggers = _triggers.Select(t => new TriggerConfig
-            {
-                Id = t.Id == Guid.Empty ? Guid.NewGuid() : t.Id,
-                Text = t.Text?.Trim() ?? string.Empty,
-                Match = t.Match,
-                Action = t.Action,
-                Enabled = t.Enabled
-            }).Where(t => !string.IsNullOrWhiteSpace(t.Text)).ToList()
+            Triggers = triggers
         };
     }
 

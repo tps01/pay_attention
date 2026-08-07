@@ -177,7 +177,7 @@ function New-PdfFromHtml([string]$htmlPath, [string]$pdfPath, [string]$edgePath)
 
 $edge = Find-Edge
 if (-not $edge) {
-    Write-Error "Cannot build PDF: Microsoft Edge is required (or install pandoc + a PDF engine)."
+    Write-Error "Cannot build PDF: Microsoft Edge was not found."
     exit 1
 }
 

@@ -91,12 +91,10 @@ def test_retention_defaults():
 
 
 def test_sample_triggers_disabled_by_default():
-    assert len(SAMPLE_TRIGGERS_DEFAULT) == 2
+    assert len(SAMPLE_TRIGGERS_DEFAULT) == 1
     assert all(t["enabled"] is False for t in SAMPLE_TRIGGERS_DEFAULT)
-    assert SAMPLE_TRIGGERS_DEFAULT[0]["text"] == "Error"
-    assert SAMPLE_TRIGGERS_DEFAULT[1]["text"] == "Exception"
+    assert SAMPLE_TRIGGERS_DEFAULT[0]["text"] == "PAYATTN_EXAMPLE"
     assert SAMPLE_TRIGGERS_DEFAULT[0]["action"] == "screenshot"
-    assert SAMPLE_TRIGGERS_DEFAULT[1]["action"] == "record"
 
 
 def test_ocr_max_width_clamp():

@@ -44,7 +44,11 @@ public sealed class ConfigImportExportTests
             service.ExportTo(path, original);
             Assert.True(File.Exists(path));
 
+            var exportedJson = File.ReadAllText(path);
+            Assert.Contains("\"captureDirectory\": \"\"", exportedJson);
+
             var imported = service.ImportFrom(path);
+            Assert.Equal(service.DefaultCaptureDirectory, imported.CaptureDirectory);
             Assert.Equal(5, imported.SequenceIntervalSeconds);
             Assert.Equal(30, imported.SequenceBeforeSeconds);
             Assert.Equal(45, imported.SequenceAfterSeconds);
