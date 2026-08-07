@@ -1,10 +1,17 @@
 # Publishes a self-contained single-file PayAttention.exe to .\publish\
+param(
+    [string]$Version = ""
+)
+
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 Write-Host "Publishing PayAttention (win-x64, self-contained, single-file)..."
+if ($Version) {
+    Write-Host "Version: $Version"
+}
 
 $running = Get-Process -Name "PayAttention" -ErrorAction SilentlyContinue
 if ($running) {
@@ -13,15 +20,23 @@ if ($running) {
     Start-Sleep -Seconds 1
 }
 
-dotnet publish src/PayAttention `
-  -c Release `
-  -r win-x64 `
-  --self-contained true `
-  -p:PublishSingleFile=true `
-  -p:IncludeNativeLibrariesForSelfExtract=true `
-  -p:EnableCompressionInSingleFile=true `
-  -p:PublishReadyToRun=true `
-  -o publish
+$publishArgs = @(
+    "publish", "src/PayAttention",
+    "-c", "Release",
+    "-r", "win-x64",
+    "--self-contained", "true",
+    "-p:PublishSingleFile=true",
+    "-p:IncludeNativeLibrariesForSelfExtract=true",
+    "-p:EnableCompressionInSingleFile=true",
+    "-p:PublishReadyToRun=true",
+    "-o", "publish"
+)
+if ($Version) {
+    $publishArgs += "-p:Version=$Version"
+    $publishArgs += "-p:InformationalVersion=$Version"
+}
+
+dotnet @publishArgs
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "If the exe is still locked, close PayAttention from the tray and try again."

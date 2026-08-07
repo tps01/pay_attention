@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Derive version
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -notmatch '^v(.+)$') {
+            throw "Tag must look like v1.0.0, got: $tag"
+          }
+          $semver = $Matches[1]
+          "semver=$semver" >> $env:GITHUB_OUTPUT
+          "zipname=PayAttention-$semver-win-x64.zip" >> $env:GITHUB_OUTPUT
+
+      - name: Publish
+        shell: pwsh
+        run: .\scripts\publish.ps1 -Version "${{ steps.ver.outputs.semver }}"
+
+      - name: Zip artifacts
+        shell: pwsh
+        run: |
+          $zip = "${{ steps.ver.outputs.zipname }}"
+          $exe = "publish\PayAttention.exe"
+          if (-not (Test-Path $exe)) {
+            throw "Expected output not found: $exe"
+          }
+          $items = @($exe)
+          $pdf = "publish\PayAttention-UserGuide.pdf"
+          if (Test-Path $pdf) {
+            $items += $pdf
+          }
+          if (Test-Path $zip) {
+            Remove-Item -LiteralPath $zip -Force
+          }
+          Compress-Archive -Path $items -DestinationPath $zip -Force
+          Write-Host "Created $zip ($((Get-Item $zip).Length) bytes)"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.ver.outputs.zipname }}
+          generate_release_notes: true
+          body: |
+            Self-contained Windows x64 build of pay_attention.
+
+            1. Download `PayAttention-*-win-x64.zip` and extract it.
+            2. Run `PayAttention.exe` (no separate .NET install).
+            3. Open `PayAttention-UserGuide.pdf` in the zip when present.

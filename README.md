@@ -6,13 +6,20 @@ Local only — nothing is uploaded.
 
 ## Share with someone
 
-From a machine with the .NET 8 SDK:
+Prefer a **[GitHub Release](https://github.com/tps01/pay_attention/releases)** zip (exe + user guide). To publish one after pushing code:
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+That runs CI, builds the win-x64 package, and attaches `PayAttention-1.0.0-win-x64.zip` to the release.
+
+Or build locally with the .NET 8 SDK and hand them `publish\`:
 
 ```powershell
 .\scripts\publish.ps1
 ```
-
-Give them the contents of `publish\`:
 
 - `PayAttention.exe`
 - `PayAttention-UserGuide.pdf` (if the PDF build succeeded)
@@ -49,7 +56,13 @@ Give them the contents of `publish\`:
 .\scripts\publish.ps1
 ```
 
+Optional version for About / assembly info: `.\scripts\publish.ps1 -Version 1.0.0`
+
 Or `scripts\publish.bat` if script execution is blocked. Output: `publish\PayAttention.exe` and usually `publish\PayAttention-UserGuide.pdf`.
+
+### Release
+
+Tag and push to create a GitHub Release with a zip (see Share above).
 
 ## Development
 
