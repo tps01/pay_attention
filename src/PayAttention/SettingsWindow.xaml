@@ -1,0 +1,194 @@
+<Window x:Class="PayAttention.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="pay_attention — Settings"
+        Height="640" Width="780"
+        MinHeight="520" MinWidth="680"
+        WindowStartupLocation="CenterScreen"
+        Background="#F4F6F8">
+  <DockPanel Margin="16">
+    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+      <Button Content="Open captures folder" Width="150" Margin="0,0,8,0" Click="OpenCaptures_Click" />
+      <Button Content="Save" Width="90" Margin="0,0,8,0" IsDefault="True" Click="Save_Click" />
+      <Button Content="Close" Width="90" IsCancel="True" Click="Close_Click" />
+    </StackPanel>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+      <StackPanel>
+        <TextBlock Text="pay_attention" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4" />
+        <TextBlock Text="Capture screenshots or short recordings when trigger text appears on screen."
+                   TextWrapping="Wrap" Opacity="0.75" Margin="0,0,0,16" />
+
+        <GroupBox Header="Triggers" Padding="10" Margin="0,0,0,12">
+          <DockPanel>
+            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+              <Button Content="Add" Width="80" Margin="0,0,8,0" Click="AddTrigger_Click" />
+              <Button Content="Remove" Width="80" Click="RemoveTrigger_Click" />
+            </StackPanel>
+            <DataGrid x:Name="TriggersGrid"
+                      AutoGenerateColumns="False"
+                      CanUserAddRows="False"
+                      HeadersVisibility="Column"
+                      SelectionMode="Single"
+                      MinHeight="160">
+              <DataGrid.Columns>
+                <DataGridCheckBoxColumn Header="On" Binding="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}" Width="40" />
+                <DataGridTextColumn Header="Text" Binding="{Binding Text, UpdateSourceTrigger=PropertyChanged}" Width="*" />
+                <DataGridComboBoxColumn Header="Match" SelectedItemBinding="{Binding Match, UpdateSourceTrigger=PropertyChanged}" Width="100"
+                                        x:Name="MatchColumn" />
+                <DataGridComboBoxColumn Header="Action" SelectedItemBinding="{Binding Action, UpdateSourceTrigger=PropertyChanged}" Width="110"
+                                        x:Name="ActionColumn" />
+              </DataGrid.Columns>
+            </DataGrid>
+          </DockPanel>
+        </GroupBox>
+
+        <GroupBox Header="Capture" Padding="10" Margin="0,0,0,12">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="180" />
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Capture directory" VerticalAlignment="Center" Margin="0,0,0,8" />
+            <TextBox x:Name="CaptureDirectoryBox" Grid.Row="0" Grid.Column="1" Margin="0,0,8,8" />
+            <Button Grid.Row="0" Grid.Column="2" Content="Browse…" Width="80" Margin="0,0,0,8" Click="BrowseCapture_Click" />
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="OCR interval (ms)" VerticalAlignment="Center" Margin="0,0,0,8"
+                       ToolTip="How often to scan. Use 250–500ms for brief serial/terminal messages." />
+            <TextBox x:Name="OcrIntervalBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                     ToolTip="How often to scan. Use 250–500ms for brief serial/terminal messages." />
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="Debounce (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
+                       ToolTip="Minimum time before the same trigger can fire again." />
+            <TextBox x:Name="DebounceBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                     ToolTip="Minimum time before the same trigger can fire again." />
+
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="Screenshot format" VerticalAlignment="Center" Margin="0,0,0,8"
+                       ToolTip="Jpeg is faster to save (default). Png is lossless." />
+            <ComboBox x:Name="ScreenshotFormatBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                      ToolTip="Jpeg is faster to save (default). Png is lossless." />
+
+            <TextBlock Grid.Row="4" Grid.Column="0" Text="Monitor" VerticalAlignment="Center"
+                       ToolTip="Used when capture scope is Monitor. Prefer Specific or Foreground window for terminal work." />
+            <StackPanel Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal">
+              <ComboBox x:Name="MonitorModeBox" Width="140" Margin="0,0,8,0" SelectionChanged="MonitorMode_Changed"
+                        ToolTip="Used when capture scope is Monitor. Prefer Specific or Foreground window for terminal work." />
+              <ComboBox x:Name="SpecificMonitorBox" Width="280" />
+            </StackPanel>
+          </Grid>
+        </GroupBox>
+
+        <GroupBox Header="Recording" Padding="10" Margin="0,0,0,12">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="180" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Buffer length (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
+                       ToolTip="Seconds kept before a trigger (pre-roll)." />
+            <TextBox x:Name="BufferSecondsBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                     ToolTip="Seconds kept before a trigger (pre-roll)." />
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="Frame rate (FPS)" VerticalAlignment="Center" Margin="0,0,0,8"
+                       ToolTip="How many frames per second to keep in the buffer." />
+            <TextBox x:Name="RecordFpsBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                     ToolTip="How many frames per second to keep in the buffer." />
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="Format" VerticalAlignment="Center" Margin="0,0,0,8"
+                       ToolTip="Avi = MJPEG video (default). Gif = animated GIF." />
+            <ComboBox x:Name="RecordFormatBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                      ToolTip="Avi = MJPEG video (default). Gif = animated GIF." />
+
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="JPEG quality" VerticalAlignment="Center"
+                       ToolTip="40–95. Lower = smaller files, more artifacts. Used for the ring buffer and AVI." />
+            <TextBox x:Name="RecordJpegQualityBox" Grid.Row="3" Grid.Column="1" Width="120" HorizontalAlignment="Left"
+                     ToolTip="40–95. Lower = smaller files, more artifacts. Used for the ring buffer and AVI." />
+          </Grid>
+        </GroupBox>
+
+        <GroupBox Header="OCR quality" Padding="10" Margin="0,0,0,12">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="180" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Capture scope" VerticalAlignment="Center" Margin="0,0,0,8"
+                       ToolTip="Foreground window limits OCR to the active app (good for MobaXterm)." />
+            <ComboBox x:Name="CaptureScopeBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8" Width="200" HorizontalAlignment="Left"
+                      ToolTip="Foreground window limits OCR to the active app (good for MobaXterm)." />
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="OCR max width (px)" VerticalAlignment="Center" Margin="0,0,0,8"
+                       ToolTip="Higher = better OCR, more CPU. 3840 ≈ little/no downscale on 4K." />
+            <TextBox x:Name="OcrMaxWidthBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                     ToolTip="Higher = better OCR, more CPU. 3840 ≈ little/no downscale on 4K." />
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="OCR upscale (%)" VerticalAlignment="Center" Margin="0,0,0,8"
+                       ToolTip="100 = none. Try 150–250 for small terminal fonts (max 400)." />
+            <TextBox x:Name="OcrUpscaleBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                     ToolTip="100 = none. Try 150–250 for small terminal fonts (max 400)." />
+
+            <CheckBox x:Name="OcrInvertBox" Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2"
+                      Content="Extra invert pass for OCR"
+                      ToolTip="Adds an invert-only OCR pass. A dark-terminal boost (invert+contrast) already runs automatically; captures stay normal." />
+          </Grid>
+        </GroupBox>
+
+        <GroupBox Header="Behavior" Padding="10" Margin="0,0,0,12">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="180" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <CheckBox x:Name="StartWithWindowsBox" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Content="Start with Windows" Margin="0,0,0,8" />
+            <CheckBox x:Name="StartMonitoringBox" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Content="Start monitoring on launch" Margin="0,0,0,8" />
+            <CheckBox x:Name="DebugJsonBox" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Content="Debug: save JSON sidecar with each capture" Margin="0,0,0,8" />
+
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="Pause hotkey" VerticalAlignment="Center" Margin="0,0,0,8" />
+            <TextBox x:Name="HotkeyBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" Width="180" HorizontalAlignment="Left"
+                     ToolTip="Example: Ctrl+Shift+P" />
+
+            <TextBlock Grid.Row="4" Grid.Column="0" Text="Retention max age (days)" VerticalAlignment="Center" Margin="0,0,0,8" />
+            <TextBox x:Name="RetentionDaysBox" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                     ToolTip="0 = do not delete by age" />
+
+            <TextBlock Grid.Row="5" Grid.Column="0" Text="Retention max files" VerticalAlignment="Center" />
+            <TextBox x:Name="RetentionFilesBox" Grid.Row="5" Grid.Column="1" Width="120" HorizontalAlignment="Left"
+                     ToolTip="0 = do not delete by count" />
+          </Grid>
+        </GroupBox>
+      </StackPanel>
+    </ScrollViewer>
+  </DockPanel>
+</Window>

@@ -1,0 +1,12 @@
+=== pay_attention HARD fixture (do not enlarge) ===
+noise: lorem ipsum dolor sit amet consectetur adipiscing elit sed do
+noise: 0xDEADBEEF aabbcc status=ok path=C:\tmp\x.y delay=3ms
+noise-punct:zX9!mQ2@kP $err#42v2
+SHOT>zX9mQ2kP<
+noise: ..... ..... ..... ..... ..... ..... ..... .....
+REC>err#42v2<
+sent:Il0O|B8S5 fail-NOW: retry?
+rnd:qW3$pL9&nX
+noise: incomplete line truncated mid-wor
+noise: {"code":500,"msg":"ignored clutter"}
+SHOT>zX9mQ2kP<
