@@ -1,8 +1,10 @@
 # pay_attention
 
-Lightweight Windows tray app that watches the screen with Windows OCR and saves a screenshot, short recording, or still sequence when text you care about appears.
+Windows tray app that watches the screen with Windows OCR and saves a screenshot, recording, or still sequence when text you care about appears.
 
-Local only — nothing is uploaded.
+Useful for taking screenshots automatically, so you don't have to. Also useful for debugging failures in post, when someone else was working through something.
+
+Local only, with no cloud support.
 
 ## Share with someone
 
