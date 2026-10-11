@@ -158,14 +158,19 @@ public partial class App : Application
 
     private static void ShowAbout()
     {
-        var version = Assembly.GetExecutingAssembly()
+        var assembly = Assembly.GetExecutingAssembly();
+        var version = assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
             ?.InformationalVersion
-            ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)
+            ?? assembly.GetName().Version?.ToString(3)
             ?? "1.0.0";
+        var company = assembly
+            .GetCustomAttribute<AssemblyCompanyAttribute>()
+            ?.Company
+            ?? "tps01";
 
         MessageBox.Show(
-            $"pay_attention\nVersion {version}\n\nWindows text-triggered screen logger.",
+            $"pay_attention\nVersion {version}\nAuthor: {company}\n\nWindows text-triggered screen logger.",
             "About pay_attention",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
