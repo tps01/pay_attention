@@ -11,11 +11,11 @@ Local only, with no cloud support.
 Prefer a **[GitHub Release](https://github.com/tps01/pay_attention/releases)** zip (exe + user guide). To publish one after pushing code:
 
 ```powershell
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
-That runs CI, builds the win-x64 package, and attaches `PayAttention-1.0.0-win-x64.zip` to the release.
+That runs CI, builds the win-x64 package, and attaches `PayAttention-1.1.0-win-x64.zip` to the release.
 
 Or build locally with the .NET 8 SDK and hand them `publish\`:
 
@@ -58,7 +58,7 @@ Or build locally with the .NET 8 SDK and hand them `publish\`:
 .\scripts\publish.ps1
 ```
 
-Optional version for About / assembly info: `.\scripts\publish.ps1 -Version 1.0.0`
+Optional version for About / assembly info: `.\scripts\publish.ps1 -Version 1.1.0`
 
 Or `scripts\publish.bat` if script execution is blocked. Output: `publish\PayAttention.exe` and usually `publish\PayAttention-UserGuide.pdf`.
 
