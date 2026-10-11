@@ -21,12 +21,14 @@ public sealed class TriggerFiredEventArgs : EventArgs
 
 public sealed class CaptureMonitor : IDisposable
 {
+    /// <summary>Fast unmatched + backlog: prefer fresher frames after a short first-tier try.</summary>
+    private static readonly TimeSpan OcrCascadeBudgetBacklogFast = TimeSpan.FromMilliseconds(400);
+
     /// <summary>
-    /// Wall-clock budget for OCR fallbacks (ROI / tiles / bands) after first-tier passes.
-    /// Prefer a fresher queued frame over exhausting a stale cascade while scrolling.
+    /// Thorough unmatched + backlog: deep enough for ROI/tiles/bands, but still bail so
+    /// scroll-era frames cannot monopolize the worker past a late inject.
     /// </summary>
-    /// <summary>When the OCR queue is backed up and triggers are Fast, prefer fresher frames.</summary>
-    private static readonly TimeSpan OcrCascadeBudgetBacklog = TimeSpan.FromMilliseconds(400);
+    private static readonly TimeSpan OcrCascadeBudgetBacklogThorough = TimeSpan.FromMilliseconds(8000);
 
     private readonly ScreenGrabber _grabber = new();
     private readonly OcrService _ocr = new();
@@ -275,11 +277,11 @@ public sealed class CaptureMonitor : IDisposable
                     config = _config;
 
                 var captured = queued.ToCapturedFrame();
-                // Only apply backlog Fast budget when more frames are already waiting.
-                // Idle worker (PendingCount == 0) gets a full Fast first-tier on this sample.
-                var pendingBehind = queue.PendingCount;
-                var text = await RecognizeFrameAsync(config, captured, token, pendingBehind)
+                // Live pending count: capture keeps enqueueing while OCR runs. A snapshot at
+                // start would miss backlog that arrives mid-cascade (stream shot→REC inject).
+                var ocr = await RecognizeFrameAsync(config, captured, token, () => queue.PendingCount)
                     .ConfigureAwait(false);
+                var text = ocr.Text;
                 var foregroundProcess = queued.ForegroundProcess;
                 var matches = TriggerMatcher.FindMatches(text, config.Triggers, config.FastMatchThresholdPercent)
                     .Where(m => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, m.Trigger.Id))
@@ -293,9 +295,11 @@ public sealed class CaptureMonitor : IDisposable
                         QueueCaptureWrite(config, captured, match, text);
                 }
 
-                // After a miss, allow another sample even if the scene looks unchanged
-                // (page paint / Fast cold-start). Fingerprint skip would otherwise stick.
-                if (!AllEnabledMatched(text, config))
+                // After a miss, resample static scenes. If we cut short and newer frames are
+                // already waiting, drain those first — but once the queue is empty we must
+                // clear the fingerprint or a static fixture (hard e2e) stalls forever.
+                if (!AllEnabledMatched(text, config) &&
+                    (!ocr.CutShortForBacklog || queue.PendingCount == 0))
                     queue.AllowResample();
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -347,12 +351,15 @@ public sealed class CaptureMonitor : IDisposable
     /// small or dark-terminal text is more likely to be recovered.
     /// When capturing the full virtual desktop, OCR each physical monitor separately.
     /// </summary>
-    private async Task<string> RecognizeFrameAsync(
+    private readonly record struct OcrFrameResult(string Text, bool CutShortForBacklog);
+
+    private async Task<OcrFrameResult> RecognizeFrameAsync(
         AppConfig config,
         CapturedFrame frame,
         CancellationToken token,
-        int pendingBehind = 0)
+        Func<int>? pendingBehind = null)
     {
+        pendingBehind ??= static () => 0;
         var cascadeClock = Stopwatch.StartNew();
         var cascade = new CascadeContext(config, cascadeClock, pendingBehind);
 
@@ -363,6 +370,7 @@ public sealed class CaptureMonitor : IDisposable
             if (monitors.Count > 1)
             {
                 var parts = new List<string>(monitors.Count);
+                var cutShort = false;
                 foreach (var monitor in monitors)
                 {
                     var soFar = string.Join("\n", parts);
@@ -372,26 +380,28 @@ public sealed class CaptureMonitor : IDisposable
                         break;
 
                     // Fresh cascade budget per monitor; backlog pressure only on the first.
-                    var monitorPending = parts.Count == 0 ? pendingBehind : 0;
+                    var monitorPending = parts.Count == 0 ? pendingBehind : static () => 0;
                     var monitorCascade = new CascadeContext(config, Stopwatch.StartNew(), monitorPending);
 
                     using var slice = _grabber.CaptureMonitor(monitor.Index);
-                    parts.Add(await RecognizeBitmapMultiPassAsync(slice.Bitmap, monitorCascade, token)
-                        .ConfigureAwait(false));
+                    var part = await RecognizeBitmapMultiPassAsync(slice.Bitmap, monitorCascade, token)
+                        .ConfigureAwait(false);
+                    parts.Add(part.Text);
+                    cutShort |= part.CutShortForBacklog;
 
                     var joinedMonitors = string.Join("\n", parts);
                     if (AllEnabledMatched(joinedMonitors, config))
-                        return joinedMonitors;
+                        return new OcrFrameResult(joinedMonitors, CutShortForBacklog: false);
                 }
 
-                return string.Join("\n", parts);
+                return new OcrFrameResult(string.Join("\n", parts), cutShort);
             }
         }
 
         return await RecognizeBitmapMultiPassAsync(frame.Bitmap, cascade, token).ConfigureAwait(false);
     }
 
-    private async Task<string> RecognizeBitmapMultiPassAsync(
+    private async Task<OcrFrameResult> RecognizeBitmapMultiPassAsync(
         Bitmap bitmap,
         CascadeContext cascade,
         CancellationToken token)
@@ -419,37 +429,49 @@ public sealed class CaptureMonitor : IDisposable
         }
 
         var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
-        if (ShouldStopCascade(joined, cascade))
-            return joined;
+        if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
+            return new OcrFrameResult(joined, false);
+        if (IsCascadeOverBudget(joined, cascade))
+            return new OcrFrameResult(joined, true);
 
         // Only when triggers are still missing: crop neon-terminal ROIs and re-OCR hard.
         await RecognizeTerminalRegionsAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
         joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
-        if (ShouldStopCascade(joined, cascade))
-            return joined;
+        if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
+            return new OcrFrameResult(joined, false);
+        if (IsCascadeOverBudget(joined, cascade))
+            return new OcrFrameResult(joined, true);
 
         await RecognizeTilesAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
         joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
-        if (ShouldStopCascade(joined, cascade))
-            return joined;
+        if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
+            return new OcrFrameResult(joined, false);
+        if (IsCascadeOverBudget(joined, cascade))
+            return new OcrFrameResult(joined, true);
 
         // Dense terminal lines: OCR overlapping horizontal bands at high upscale.
         await RecognizeHorizontalBandsAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
-        return string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+        joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+        if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
+            return new OcrFrameResult(joined, false);
+        return new OcrFrameResult(joined, IsCascadeOverBudget(joined, cascade));
     }
 
     private readonly struct CascadeContext
     {
-        public CascadeContext(AppConfig config, Stopwatch clock, int pendingBehind)
+        private readonly Func<int> _pendingBehind;
+
+        public CascadeContext(AppConfig config, Stopwatch clock, Func<int> pendingBehind)
         {
             Config = config;
             Clock = clock;
-            PendingBehind = pendingBehind;
+            _pendingBehind = pendingBehind;
         }
 
         public AppConfig Config { get; }
         public Stopwatch Clock { get; }
-        public int PendingBehind { get; }
+        /// <summary>Frames waiting behind the one currently being OCR'd (re-read each check).</summary>
+        public int PendingBehind => _pendingBehind();
         public int FastMatchThresholdPercent => Config.FastMatchThresholdPercent;
     }
 
@@ -475,24 +497,28 @@ public sealed class CaptureMonitor : IDisposable
     }
 
     /// <summary>
-    /// Cascade time budget only when newer frames are already queued and every still-unmatched
-    /// trigger is Fast. Idle Fast runs full fallbacks (same depth as Thorough) so a single
-    /// hard-to-read frame is not abandoned; backlog Fast prefers fresher samples.
+    /// When newer frames are already queued, cut the cascade short so OCR can catch up
+    /// (e.g. scroll noise after a shot inject before a later REC fixture). Idle workers
+    /// (no backlog) always run the full cascade — Fast and Thorough alike.
     /// </summary>
-    private static bool ShouldApplyCascadeBudget(string text, CascadeContext cascade)
-    {
-        if (cascade.PendingBehind <= 0)
-            return false;
+    private static bool ShouldApplyCascadeBudget(CascadeContext cascade) =>
+        cascade.PendingBehind > 0;
 
+    private static TimeSpan CascadeBudgetFor(string text, CascadeContext cascade)
+    {
         var matchedIds = TriggerMatcher.FindMatches(text, cascade.Config.Triggers, cascade.FastMatchThresholdPercent)
             .Select(m => m.Trigger.Id)
             .ToHashSet();
         var unmatched = EnabledTriggers(cascade.Config).Where(t => !matchedIds.Contains(t.Id)).ToList();
-        return unmatched.Count > 0 && unmatched.All(t => t.OcrMode == OcrSpeedMode.Fast);
+        if (unmatched.Count == 0)
+            return OcrCascadeBudgetBacklogFast;
+        return unmatched.All(t => t.OcrMode == OcrSpeedMode.Fast)
+            ? OcrCascadeBudgetBacklogFast
+            : OcrCascadeBudgetBacklogThorough;
     }
 
     private static bool IsCascadeOverBudget(string text, CascadeContext cascade) =>
-        ShouldApplyCascadeBudget(text, cascade) && cascade.Clock.Elapsed >= OcrCascadeBudgetBacklog;
+        ShouldApplyCascadeBudget(cascade) && cascade.Clock.Elapsed >= CascadeBudgetFor(text, cascade);
 
     private static bool ShouldStopCascade(string text, CascadeContext cascade) =>
         AllEnabledMatched(text, cascade.Config, cascade.FastMatchThresholdPercent) ||
