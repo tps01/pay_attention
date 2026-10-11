@@ -46,6 +46,9 @@ public sealed class ConfigService
         {
             var json = File.ReadAllText(ConfigPath);
             var config = JsonSerializer.Deserialize<AppConfig>(json, JsonDefaults.Options) ?? CreateDefault();
+            // Upgrade older configs that never had an applications key.
+            if (json.IndexOf("\"applications\"", StringComparison.OrdinalIgnoreCase) < 0)
+                config.Applications = ApplicationScopeEvaluator.CreateDefaultApplications();
             Normalize(config);
             return new ConfigLoadResult { Config = config };
         }
@@ -121,6 +124,7 @@ public sealed class ConfigService
         return new AppConfig
         {
             CaptureDirectory = DefaultCaptureDirectory,
+            ApplicationScope = ApplicationScopeMode.AllMinusBlacklisted,
             Triggers =
             [
                 // Distinctive placeholders — disabled. Avoid common words like "Error".
@@ -131,7 +135,8 @@ public sealed class ConfigService
                     Action = CaptureAction.Screenshot,
                     Enabled = false
                 }
-            ]
+            ],
+            Applications = ApplicationScopeEvaluator.CreateDefaultApplications()
         };
     }
 
@@ -153,5 +158,27 @@ public sealed class ConfigService
         config.RetentionMaxAgeDays = Math.Clamp(config.RetentionMaxAgeDays, 0, 3650);
         config.RetentionMaxFiles = Math.Clamp(config.RetentionMaxFiles, 0, 100_000);
         config.Triggers ??= [];
+        config.Applications ??= [];
+
+        foreach (var trigger in config.Triggers)
+        {
+            if (trigger.Id == Guid.Empty)
+                trigger.Id = Guid.NewGuid();
+        }
+
+        config.Applications = config.Applications
+            .Where(a => !string.IsNullOrWhiteSpace(a.ProcessName))
+            .ToList();
+
+        foreach (var app in config.Applications)
+        {
+            if (app.Id == Guid.Empty)
+                app.Id = Guid.NewGuid();
+            app.ProcessName = ApplicationScopeEvaluator.NormalizeProcessName(app.ProcessName);
+            app.DebounceSeconds = Math.Clamp(app.DebounceSeconds, 1, 3600);
+            app.TriggerIds ??= [];
+        }
+
+        ApplicationScopeEvaluator.PruneTriggerIds(config);
     }
 }

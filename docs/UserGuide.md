@@ -41,6 +41,24 @@ Avoid common words like “Error” unless you want many captures of everyday wi
 
 Prefer short unique phrases. Mid-token `!` `@` `$` is often misread; letters, digits, and `#` work better.
 
+## Applications
+
+Limit which processes OCR watches (process name, e.g. `firefox` or `PayAttention`):
+
+- **On** — row enabled  
+- **Application** — process name (**Pick…** lists running apps)  
+- **List** — `Whitelist` or `Blacklist`  
+- **Debounce** — overrides Capture debounce when that app is in the foreground (default **30** s)  
+- **Triggers** — click the cell, then select rows in the Triggers table above (`All` if none selected). Deleted triggers are dropped from associations automatically.
+
+**Application scope** (Capture section, default **All Minus Blacklisted Applications**):
+
+- **All Applications** — no process filter  
+- **Whitelisted Applications** — only when a whitelisted app is foreground  
+- **All Minus Blacklisted Applications** — skip fully blacklisted foreground apps; blacklisted windows are masked out of OCR (so Settings text does not fire triggers)
+
+By default **PayAttention** is an on blacklist entry so the settings UI does not capture itself.
+
 ## Actions
 
 | Action | What you get |
@@ -68,7 +86,8 @@ Change the capture folder in Settings. **Import…** / **Export…** copy settin
 ## Useful settings
 
 - **OCR interval** — scan rate (default **500 ms**; try 250–500 for brief messages)  
-- **Debounce** — min gap after a *changed* scene (default **30 s**)  
+- **Debounce** — min gap after a *changed* scene (default **30 s**; per-app debounce can override)  
+- **Application scope** — all / whitelisted / all minus blacklisted (default **all minus blacklisted**)  
 - **Monitor / capture scope** — primary, specific, all, or foreground window  
 - **Recording** — buffer length / FPS / quality (defaults **15 s**, **3 FPS**, JPEG **60**)  
 - **Sequence** — spacing / before / after (defaults **5 / 30 / 30** s)  

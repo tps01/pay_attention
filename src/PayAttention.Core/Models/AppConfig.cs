@@ -25,5 +25,7 @@ public sealed class AppConfig
     public string PauseHotkey { get; set; } = "Ctrl+Shift+P";
     public int RetentionMaxAgeDays { get; set; } = 14;
     public int RetentionMaxFiles { get; set; } = 200;
+    public ApplicationScopeMode ApplicationScope { get; set; } = ApplicationScopeMode.AllMinusBlacklisted;
     public List<TriggerConfig> Triggers { get; set; } = new();
+    public List<ApplicationConfig> Applications { get; set; } = new();
 }

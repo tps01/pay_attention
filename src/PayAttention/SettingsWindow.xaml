@@ -2,10 +2,11 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="pay_attention — Settings"
-        Height="640" Width="780"
-        MinHeight="520" MinWidth="680"
+        Height="760" Width="820"
+        MinHeight="560" MinWidth="720"
         WindowStartupLocation="CenterScreen"
-        Background="#F4F6F8">
+        Background="#F4F6F8"
+        PreviewKeyDown="Window_PreviewKeyDown">
   <DockPanel Margin="16">
     <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
       <Button Content="Import…" Width="90" Margin="0,0,8,0" Click="Import_Click" />
@@ -25,13 +26,15 @@
           <DockPanel>
             <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
               <Button Content="Add" Width="80" Margin="0,0,8,0" Click="AddTrigger_Click" />
-              <Button Content="Remove" Width="80" Click="RemoveTrigger_Click" />
+              <Button Content="Remove" Width="80" Margin="0,0,8,0" Click="RemoveTrigger_Click" />
+              <TextBlock x:Name="TriggerAssociationHint" VerticalAlignment="Center" FontStyle="Italic" Opacity="0.8" />
             </StackPanel>
             <DataGrid x:Name="TriggersGrid"
                       AutoGenerateColumns="False"
                       CanUserAddRows="False"
                       HeadersVisibility="Column"
                       SelectionMode="Single"
+                      SelectionChanged="TriggersGrid_SelectionChanged"
                       MinHeight="160">
               <DataGrid.Columns>
                 <DataGridCheckBoxColumn Header="On" Binding="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}" Width="40" />
@@ -40,6 +43,48 @@
                                         x:Name="MatchColumn" />
                 <DataGridComboBoxColumn Header="Action" SelectedItemBinding="{Binding Action, UpdateSourceTrigger=PropertyChanged}" Width="120"
                                         x:Name="ActionColumn" />
+              </DataGrid.Columns>
+            </DataGrid>
+          </DockPanel>
+        </GroupBox>
+
+        <GroupBox Header="Applications" Padding="10" Margin="0,0,0,12">
+          <DockPanel>
+            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+              <Button Content="Add" Width="80" Margin="0,0,8,0" Click="AddApplication_Click" />
+              <Button Content="Remove" Width="80" Click="RemoveApplication_Click" />
+            </StackPanel>
+            <DataGrid x:Name="ApplicationsGrid"
+                      AutoGenerateColumns="False"
+                      CanUserAddRows="False"
+                      HeadersVisibility="Column"
+                      SelectionMode="Single"
+                      MinHeight="140">
+              <DataGrid.Columns>
+                <DataGridCheckBoxColumn Header="On" Binding="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}" Width="40" />
+                <DataGridTemplateColumn Header="Application" Width="*">
+                  <DataGridTemplateColumn.CellTemplate>
+                    <DataTemplate>
+                      <DockPanel LastChildFill="True">
+                        <Button DockPanel.Dock="Right" Content="Pick…" Margin="6,0,0,0" Padding="8,2"
+                                Click="PickApplication_Click" Tag="{Binding}" />
+                        <TextBox Text="{Binding ProcessName, UpdateSourceTrigger=PropertyChanged}" VerticalContentAlignment="Center" />
+                      </DockPanel>
+                    </DataTemplate>
+                  </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridComboBoxColumn Header="List" SelectedItemBinding="{Binding ListMode, UpdateSourceTrigger=PropertyChanged}" Width="100"
+                                        x:Name="ListModeColumn" />
+                <DataGridTextColumn Header="Debounce" Binding="{Binding DebounceSeconds, UpdateSourceTrigger=PropertyChanged}" Width="80" />
+                <DataGridTemplateColumn Header="Triggers" Width="140">
+                  <DataGridTemplateColumn.CellTemplate>
+                    <DataTemplate>
+                      <Button Content="{Binding TriggersDisplay}" HorizontalContentAlignment="Left"
+                              Click="ApplicationTriggers_Click" Tag="{Binding}"
+                              ToolTip="Click to select triggers in the table above" />
+                    </DataTemplate>
+                  </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
               </DataGrid.Columns>
             </DataGrid>
           </DockPanel>
@@ -58,6 +103,7 @@
               <RowDefinition Height="Auto" />
               <RowDefinition Height="Auto" />
               <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <TextBlock Grid.Row="0" Grid.Column="0" Text="Capture directory" VerticalAlignment="Center" Margin="0,0,0,8" />
@@ -70,18 +116,24 @@
                      ToolTip="How often to scan. Use 250–500ms for brief serial/terminal messages." />
 
             <TextBlock Grid.Row="2" Grid.Column="0" Text="Debounce (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed." />
+                       ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed. Per-application debounce overrides this when that app is foreground." />
             <TextBox x:Name="DebounceBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                     ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed." />
+                     ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed. Per-application debounce overrides this when that app is foreground." />
 
-            <TextBlock Grid.Row="3" Grid.Column="0" Text="Screenshot format" VerticalAlignment="Center" Margin="0,0,0,8"
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="Application scope" VerticalAlignment="Center" Margin="0,0,0,8"
+                       ToolTip="Controls which processes OCR may watch, using the Applications table." />
+            <ComboBox x:Name="ApplicationScopeBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="280" HorizontalAlignment="Left"
+                      DisplayMemberPath="Display" SelectedValuePath="Value"
+                      ToolTip="Controls which processes OCR may watch, using the Applications table." />
+
+            <TextBlock Grid.Row="4" Grid.Column="0" Text="Screenshot format" VerticalAlignment="Center" Margin="0,0,0,8"
                        ToolTip="Jpeg is faster to save (default). Png is lossless." />
-            <ComboBox x:Name="ScreenshotFormatBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+            <ComboBox x:Name="ScreenshotFormatBox" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
                       ToolTip="Jpeg is faster to save (default). Png is lossless." />
 
-            <TextBlock Grid.Row="4" Grid.Column="0" Text="Monitor" VerticalAlignment="Center"
+            <TextBlock Grid.Row="5" Grid.Column="0" Text="Monitor" VerticalAlignment="Center"
                        ToolTip="Used when capture scope is Monitor. Prefer Specific or Foreground window for terminal work." />
-            <StackPanel Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal">
+            <StackPanel Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal">
               <ComboBox x:Name="MonitorModeBox" Width="140" Margin="0,0,8,0" SelectionChanged="MonitorMode_Changed"
                         ToolTip="Used when capture scope is Monitor. Prefer Specific or Foreground window for terminal work." />
               <ComboBox x:Name="SpecificMonitorBox" Width="280" />

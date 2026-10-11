@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using PayAttention.Core.Services;
 
 namespace PayAttention.Capture;
 
@@ -10,6 +12,7 @@ public sealed class CapturedFrame : IDisposable
     public DateTimeOffset Timestamp { get; init; }
     public int MonitorIndex { get; init; }
     public string MonitorName { get; init; } = string.Empty;
+    public Rectangle ScreenBounds { get; init; }
 
     public void Dispose() => Bitmap.Dispose();
 }
@@ -84,6 +87,113 @@ public sealed class ScreenGrabber
         return CaptureBounds(bounds, index, "ForegroundWindow");
     }
 
+    public string? GetForegroundProcessName()
+    {
+        var hwnd = NativeMethods.GetForegroundWindow();
+        if (hwnd == IntPtr.Zero)
+            return null;
+
+        NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+        if (pid == 0)
+            return null;
+
+        try
+        {
+            using var process = Process.GetProcessById(unchecked((int)pid));
+            return ApplicationScopeEvaluator.NormalizeProcessName(process.ProcessName);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public IReadOnlyList<string> GetRunningProcessNames()
+    {
+        return Process.GetProcesses()
+            .Select(p =>
+            {
+                try
+                {
+                    return ApplicationScopeEvaluator.NormalizeProcessName(p.ProcessName);
+                }
+                catch
+                {
+                    return string.Empty;
+                }
+                finally
+                {
+                    p.Dispose();
+                }
+            })
+            .Where(n => n.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Fills black over top-level windows belonging to the given process names,
+    /// relative to the capture's screen coordinates.
+    /// </summary>
+    public void MaskProcessWindows(Bitmap bitmap, Rectangle screenBounds, IEnumerable<string> processNames)
+    {
+        var targets = processNames
+            .Select(ApplicationScopeEvaluator.NormalizeProcessName)
+            .Where(n => n.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (targets.Count == 0 || bitmap.Width < 1 || bitmap.Height < 1)
+            return;
+
+        var rects = new List<Rectangle>();
+        NativeMethods.EnumWindows((hwnd, _) =>
+        {
+            if (!NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd))
+                return true;
+
+            NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+            if (pid == 0)
+                return true;
+
+            string? name = null;
+            try
+            {
+                using var process = Process.GetProcessById(unchecked((int)pid));
+                name = ApplicationScopeEvaluator.NormalizeProcessName(process.ProcessName);
+            }
+            catch
+            {
+                return true;
+            }
+
+            if (name is null || !targets.Contains(name))
+                return true;
+
+            if (!NativeMethods.GetWindowRect(hwnd, out var rect))
+                return true;
+
+            var windowBounds = Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
+            var overlap = Rectangle.Intersect(windowBounds, screenBounds);
+            if (overlap.Width < 1 || overlap.Height < 1)
+                return true;
+
+            rects.Add(new Rectangle(
+                overlap.X - screenBounds.X,
+                overlap.Y - screenBounds.Y,
+                overlap.Width,
+                overlap.Height));
+            return true;
+        }, IntPtr.Zero);
+
+        if (rects.Count == 0)
+            return;
+
+        using var g = Graphics.FromImage(bitmap);
+        using var brush = new SolidBrush(Color.Black);
+        foreach (var r in rects)
+            g.FillRectangle(brush, r);
+    }
+
     private static CapturedFrame CaptureBounds(Rectangle bounds, int index, string name)
     {
         var bitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
@@ -97,12 +207,15 @@ public sealed class ScreenGrabber
             Bitmap = bitmap,
             Timestamp = DateTimeOffset.Now,
             MonitorIndex = index,
-            MonitorName = name
+            MonitorName = name,
+            ScreenBounds = bounds
         };
     }
 
     private static class NativeMethods
     {
+        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
         [DllImport("user32.dll")]
         public static extern IntPtr GetForegroundWindow();
 
@@ -113,6 +226,17 @@ public sealed class ScreenGrabber
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
         [StructLayout(LayoutKind.Sequential)]
         public struct Rect

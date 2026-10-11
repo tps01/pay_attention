@@ -147,6 +147,18 @@ public sealed class CaptureMonitor : IDisposable
                 }
 
                 using var frame = Grab(config);
+                var foregroundProcess = _grabber.GetForegroundProcessName();
+
+                if (ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, foregroundProcess))
+                {
+                    await Task.Delay(interval, token).ConfigureAwait(false);
+                    continue;
+                }
+
+                var maskNames = ApplicationScopeEvaluator.GetBlacklistProcessNamesToMask(config);
+                if (maskNames.Count > 0)
+                    _grabber.MaskProcessWindows(frame.Bitmap, frame.ScreenBounds, maskNames);
+
                 var needsRecordRing = config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Record);
                 if (needsRecordRing)
                     _ringBuffer.TryAdd(frame.Bitmap, frame.Timestamp, config.RecordJpegQuality);
@@ -156,13 +168,15 @@ public sealed class CaptureMonitor : IDisposable
                     _sequenceRing.TryAdd(frame.Bitmap, frame.Timestamp, config.RecordJpegQuality);
 
                 var text = await RecognizeFrameAsync(config, frame, token).ConfigureAwait(false);
-                var matches = TriggerMatcher.FindMatches(text, config.Triggers);
+                var matches = TriggerMatcher.FindMatches(text, config.Triggers)
+                    .Where(m => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, m.Trigger.Id));
 
+                var debounceSeconds = ApplicationScopeEvaluator.GetEffectiveDebounceSeconds(config, foregroundProcess);
                 foreach (var match in matches)
                 {
                     var key = $"{match.Trigger.Id}:{match.MatchedPortion}";
                     var fingerprint = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
-                    if (_fireGate.ShouldFire(key, TimeSpan.FromSeconds(config.DebounceSeconds), fingerprint))
+                    if (_fireGate.ShouldFire(key, TimeSpan.FromSeconds(debounceSeconds), fingerprint))
                         QueueCaptureWrite(config, frame, match, text);
                 }
 

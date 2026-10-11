@@ -38,3 +38,16 @@ public enum ScreenshotFormat
     Jpeg = 0,
     Png = 1
 }
+
+public enum ApplicationListMode
+{
+    Whitelist = 0,
+    Blacklist = 1
+}
+
+public enum ApplicationScopeMode
+{
+    All = 0,
+    Whitelisted = 1,
+    AllMinusBlacklisted = 2
+}
