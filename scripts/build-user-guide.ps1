@@ -7,6 +7,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $md = Join-Path $root "docs\UserGuide.md"
 $publishDir = Join-Path $root "publish"
 $pdf = Join-Path $publishDir "PayAttention-UserGuide.pdf"
+$pdfAuthor = "tps01"
 
 if (-not (Test-Path $md)) {
     Write-Error "User guide not found: $md"
@@ -149,6 +150,7 @@ ul, ol { margin: 0.4em 0 0.8em 1.2em; }
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="author" content="$pdfAuthor" />
 <title>Pay Attention User Guide</title>
 <style>
 $css
@@ -175,6 +177,82 @@ function New-PdfFromHtml([string]$htmlPath, [string]$pdfPath, [string]$edgePath)
     }
 }
 
+function Escape-PdfString([string]$value) {
+    return ((($value -replace '\\', '\\\\') -replace '\(', '\(') -replace '\)', '\)')
+}
+
+# Incremental update so xref offsets stay valid for Edge/Chromium print-to-pdf output.
+function Set-PdfAuthor([string]$pdfPath, [string]$author) {
+    $enc = [System.Text.Encoding]::GetEncoding('iso-8859-1')
+    $original = [System.IO.File]::ReadAllBytes($pdfPath)
+    $text = $enc.GetString($original)
+
+    $startxrefMatches = [regex]::Matches($text, 'startxref\s+(\d+)\s*%%EOF')
+    if ($startxrefMatches.Count -eq 0) {
+        Write-Warning "PDF has no startxref; skipping Author stamp"
+        return
+    }
+    $lastXref = $startxrefMatches[$startxrefMatches.Count - 1]
+    $prevXref = $lastXref.Groups[1].Value
+    $baseLength = $lastXref.Index + $lastXref.Length
+
+    $trailerMatches = [regex]::Matches($text, 'trailer\s*<<\s*(.*?)\s*>>', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    if ($trailerMatches.Count -eq 0) {
+        Write-Warning "PDF has no trailer; skipping Author stamp"
+        return
+    }
+    $trailerBody = $trailerMatches[$trailerMatches.Count - 1].Groups[1].Value
+    if ($trailerBody -notmatch '/Root\s+(\d+\s+\d+\s+R)') {
+        Write-Warning "PDF trailer missing /Root; skipping Author stamp"
+        return
+    }
+    $rootRef = $Matches[1]
+
+    $size = 1
+    if ($trailerBody -match '/Size\s+(\d+)') {
+        $size = [int]$Matches[1]
+    }
+    $newObjNum = $size
+
+    $title = "Pay Attention User Guide"
+    if ($text -match '/Title\s*\(((?:\\.|[^\\)])*)\)') {
+        $title = $Matches[1]
+    }
+    else {
+        $title = Escape-PdfString $title
+    }
+
+    $escapedAuthor = Escape-PdfString $author
+    $objText = "`n${newObjNum} 0 obj`n<<`n/Title ($title)`n/Author ($escapedAuthor)`n/Creator ($escapedAuthor)`n>>`nendobj`n"
+    $objBytes = $enc.GetBytes($objText)
+    $objOffset = $baseLength + 1
+
+    $xrefOffset = $baseLength + $objBytes.Length
+    $offsetStr = '{0:D10}' -f $objOffset
+    $xrefText = @"
+xref
+$newObjNum 1
+$offsetStr 00000 n 
+trailer
+<<
+/Size $($newObjNum + 1)
+/Root $rootRef
+/Info $newObjNum 0 R
+/Prev $prevXref
+>>
+startxref
+$xrefOffset
+%%EOF
+"@ -replace "`r`n", "`n"
+    $xrefBytes = $enc.GetBytes($xrefText)
+
+    $output = New-Object byte[] ($baseLength + $objBytes.Length + $xrefBytes.Length)
+    [Array]::Copy($original, 0, $output, 0, $baseLength)
+    [Array]::Copy($objBytes, 0, $output, $baseLength, $objBytes.Length)
+    [Array]::Copy($xrefBytes, 0, $output, $baseLength + $objBytes.Length, $xrefBytes.Length)
+    [System.IO.File]::WriteAllBytes($pdfPath, $output)
+}
+
 $edge = Find-Edge
 if (-not $edge) {
     Write-Error "Cannot build PDF: Microsoft Edge was not found."
@@ -186,7 +264,7 @@ try {
     $pandoc = Get-Command pandoc -ErrorAction SilentlyContinue
     if ($pandoc) {
         Write-Host "Rendering user guide HTML with pandoc..."
-        & pandoc $md -t html5 -s --metadata title="Pay Attention User Guide" -o $tempHtml
+        & pandoc $md -t html5 -s --metadata title="Pay Attention User Guide" --metadata author=$pdfAuthor -o $tempHtml
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tempHtml)) {
             Write-Host "pandoc HTML failed; falling back to built-in Markdown converter..."
             Convert-MarkdownToHtml -markdownPath $md -htmlPath $tempHtml
@@ -199,6 +277,7 @@ try {
 
     Write-Host "Printing PDF with Edge..."
     New-PdfFromHtml -htmlPath $tempHtml -pdfPath $pdf -edgePath $edge
+    Set-PdfAuthor -pdfPath $pdf -author $pdfAuthor
     Write-Host "Wrote $pdf"
 }
 finally {

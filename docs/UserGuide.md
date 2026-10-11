@@ -23,7 +23,6 @@ Only one copy should run at a time.
 1. Find the tray icon near the clock (you may need **^**).
 2. Right-click:
    - **Start** / **Stop** monitoring  
-   - **Pause** / **Resume** (hotkey default `Ctrl+Shift+P`)  
    - **Settings…**  
    - **Open captures folder**  
    - **About…** (version)  
@@ -37,9 +36,56 @@ Avoid common words like “Error” unless you want many captures of everyday wi
 - **Text** — string to look for  
 - **Match** — `contains` (usual), `exact`, or `regex` (invalid regex blocks Save)  
 - **Action** — Screenshot, Record, or Sequence  
+- **OCR** — `Thorough` (default) or `Fast` (see below)  
 - **Enabled** — only enabled rows fire  
 
-Prefer short unique phrases. Mid-token `!` `@` `$` is often misread; letters, digits, and `#` work better.
+### Choosing Thorough vs Fast
+
+| Mode | Use when | Trade-off |
+| --- | --- | --- |
+| **Thorough** (default) | Text stays on screen (logs, dialogs, dashboards) or is small / low-contrast / oddly punctuated | Runs more OCR passes (slower per frame, higher chance of a match) |
+| **Fast** | Text appears only briefly (fast-scrolling consoles, kernel dumps, flashing status lines) | Prefers fresh screen samples over exhausting every OCR fallback on one frame |
+
+Use **Fast** for lines you expect to scroll away in about a second. Use **Thorough** for hard-to-read tokens that stay visible. You can mix modes across triggers: while only **Fast** triggers remain unmatched, OCR spends less time on fallbacks so fresh frames win; **Thorough** triggers keep the deeper multi-pass search (and will re-scan a static screen until they match).
+
+Pair **Fast** with a shorter **OCR interval** (about 250–500 ms) when catching flash-by text.
+
+**Fast match threshold** (Capture settings, default **90%**) controls how closely OCR text must resemble a **Fast** trigger phrase. This is a similarity score against your trigger text—not a Windows OCR confidence value. **100%** is strictest (same idea as today’s matching); lower values are more reactive on garbled OCR but raise false positives. **Thorough** triggers ignore this slider.
+
+### Writing triggers that OCR can read
+
+Windows OCR is good at **readable words and short phrases**, not random keyboard mash.
+
+- Prefer a distinctive **chunk of real words** or a known message fragment, e.g. `RIP INEXACT`, `Machine check`, `PAYATTN_EXAMPLE`.  
+- Avoid long strings of random characters like `asadf788ynf` or mixed punctuation soup — OCR often misreads them.  
+- Mid-token `!` `@` `$` is frequently dropped or altered; letters, digits, spaces, `_`, and `#` are more reliable.  
+- Prefer **contains** match on a stable substring rather than an exact match on a whole noisy line.  
+- Keep the text **visible, uncovered, and reasonably sized**; neon Consolas on black works well for serial consoles.  
+- Avoid everyday words like “Error” unless you want many everyday captures.
+
+## Applications
+
+Limit which processes OCR watches (process name, e.g. `firefox` or `PayAttention`):
+
+- **On** — row enabled  
+- **Application** — process name (**Pick…** lists running apps, or **Browse…** to an `.exe`)  
+- **List** — `Whitelist` or `Blacklist`  
+- **Debounce** — overrides Capture debounce when that app is in the foreground (default **30** s)  
+- **Triggers** — dropdown: **All**, **Selected** (opens a multi-select picker), or **None**. Deleted triggers are dropped from associations automatically.
+
+Pause monitoring with the hotkey (default `Ctrl+Shift+P`) in Settings → Behavior.
+
+**Application scope** (Capture section, default **All Minus Blacklisted Applications**):
+
+- **All Applications** — no process filter  
+- **Whitelisted Applications** — OCR captures **only** whitelisted app windows (best when you want to ignore everything else, even on other monitors)  
+- **All Minus Blacklisted Applications** — skip OCR when a *fully* blacklisted app is in the **foreground**; otherwise blacklisted windows are masked out of the grab (so Settings text does not fire). Prefer Whitelist if a blacklisted browser on a side monitor must never be read.
+
+By default **PayAttention** is an on blacklist entry so the settings UI does not capture itself.
+
+**Monitor** (when capture scope is Monitor): prefer **Primary** or **Specific**. **All** scans every display and is slower—especially with Fast OCR on multi-monitor setups.
+
+**Capture scope**: **Monitor** watches the chosen display(s). **Foreground window** only OCRs the focused app and needs that window to stay focused.
 
 ## Actions
 
@@ -67,8 +113,10 @@ Change the capture folder in Settings. **Import…** / **Export…** copy settin
 
 ## Useful settings
 
-- **OCR interval** — scan rate (default **500 ms**; try 250–500 for brief messages)  
-- **Debounce** — min gap after a *changed* scene (default **30 s**)  
+- **OCR interval** — capture period between grabs (default **500 ms**; try 250–500 with **Fast** OCR for brief messages)  
+- **Fast match threshold** — similarity for **Fast** triggers only (default **90%**; lower = looser)  
+- **Debounce** — min gap after a *changed* scene (default **30 s**; per-app debounce can override)  
+- **Application scope** — all / whitelisted / all minus blacklisted (default **all minus blacklisted**)  
 - **Monitor / capture scope** — primary, specific, all, or foreground window  
 - **Recording** — buffer length / FPS / quality (defaults **15 s**, **3 FPS**, JPEG **60**)  
 - **Sequence** — spacing / before / after (defaults **5 / 30 / 30** s)  

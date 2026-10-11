@@ -12,14 +12,23 @@ public sealed class TriggerMatchResult
 
 public static class TriggerMatcher
 {
-    public static TriggerMatchResult? FindMatch(string ocrText, IEnumerable<TriggerConfig> triggers) =>
-        FindMatches(ocrText, triggers).FirstOrDefault();
+    public const int DefaultFastMatchThresholdPercent = 90;
 
-    public static IReadOnlyList<TriggerMatchResult> FindMatches(string ocrText, IEnumerable<TriggerConfig> triggers)
+    public static TriggerMatchResult? FindMatch(
+        string ocrText,
+        IEnumerable<TriggerConfig> triggers,
+        int fastMatchThresholdPercent = DefaultFastMatchThresholdPercent) =>
+        FindMatches(ocrText, triggers, fastMatchThresholdPercent).FirstOrDefault();
+
+    public static IReadOnlyList<TriggerMatchResult> FindMatches(
+        string ocrText,
+        IEnumerable<TriggerConfig> triggers,
+        int fastMatchThresholdPercent = DefaultFastMatchThresholdPercent)
     {
         if (string.IsNullOrWhiteSpace(ocrText))
             return [];
 
+        var threshold = Math.Clamp(fastMatchThresholdPercent, 50, 100);
         var normalizedHaystack = Normalize(ocrText);
         var foldedHaystack = FoldConfusables(normalizedHaystack);
         var compactHaystack = CompactAlnum(foldedHaystack);
@@ -64,7 +73,9 @@ public static class TriggerMatcher
                         foldedHaystack.Contains(foldedNeedle, StringComparison.OrdinalIgnoreCase) ||
                         (!string.IsNullOrEmpty(compactNeedle) &&
                          compactHaystack.Contains(compactNeedle, StringComparison.OrdinalIgnoreCase)) ||
-                        FuzzyContains(compactHaystack, compactNeedle))
+                        FuzzyContains(compactHaystack, compactNeedle) ||
+                        (trigger.OcrMode == OcrSpeedMode.Fast &&
+                         MeetsFastSimilarityThreshold(compactHaystack, compactNeedle, threshold)))
                     {
                         results.Add(new TriggerMatchResult { Trigger = trigger, MatchedPortion = trigger.Text });
                     }
@@ -136,6 +147,59 @@ public static class TriggerMatcher
     /// <summary>Letters/digits only after confusable folding — punctuation-agnostic compare.</summary>
     public static string CompactAlnum(string foldedText) =>
         Regex.Replace(foldedText, @"[^0-9a-z]+", "", RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Fast-only: best sliding-window similarity vs threshold (percent). Needle length ≥ 6.
+    /// At 100 this requires a perfect compact match (already covered by contains).
+    /// </summary>
+    public static bool MeetsFastSimilarityThreshold(string compactHaystack, string compactNeedle, int thresholdPercent)
+    {
+        if (string.IsNullOrEmpty(compactNeedle) || compactNeedle.Length < 6)
+            return false;
+        if (string.IsNullOrEmpty(compactHaystack))
+            return false;
+
+        var scorePercent = BestCompactSimilarityPercent(compactHaystack, compactNeedle);
+        return scorePercent >= thresholdPercent;
+    }
+
+    /// <summary>
+    /// Best window score: 100 * (1 - Levenshtein / max(window, needle length)).
+    /// </summary>
+    public static int BestCompactSimilarityPercent(string compactHaystack, string compactNeedle)
+    {
+        if (string.IsNullOrEmpty(compactNeedle) || string.IsNullOrEmpty(compactHaystack))
+            return 0;
+
+        if (compactHaystack.Contains(compactNeedle, StringComparison.OrdinalIgnoreCase))
+            return 100;
+
+        // Search windows near needle length; allow more slack than FuzzyContains when threshold is low.
+        var maxDistance = Math.Max(1, (int)Math.Ceiling(compactNeedle.Length * 0.5));
+        var minWindow = Math.Max(1, compactNeedle.Length - maxDistance);
+        var maxWindow = compactNeedle.Length + maxDistance;
+        var best = 0;
+
+        for (var win = minWindow; win <= maxWindow; win++)
+        {
+            if (compactHaystack.Length < win)
+                break;
+
+            for (var i = 0; i <= compactHaystack.Length - win; i++)
+            {
+                var window = compactHaystack.Substring(i, win);
+                var denom = Math.Max(compactNeedle.Length, window.Length);
+                if (denom == 0)
+                    continue;
+                var dist = Levenshtein(window, compactNeedle);
+                var score = (int)Math.Round(100.0 * (1.0 - (double)dist / denom));
+                if (score > best)
+                    best = score;
+            }
+        }
+
+        return best;
+    }
 
     /// <summary>
     /// Allow a small edit distance for short needles (OCR drop/insert of a few chars).

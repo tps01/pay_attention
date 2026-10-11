@@ -1,0 +1,7 @@
+edge-profile/
+captures_runs/
+configs/
+app/
+logs/
+ExploreRunner/bin/
+ExploreRunner/obj/

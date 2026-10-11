@@ -23,7 +23,6 @@ public partial class App : Application
     private SettingsWindow? _settingsWindow;
     private HotkeyService? _hotkey;
     private ToolStripMenuItem? _startStopItem;
-    private ToolStripMenuItem? _pauseItem;
     private string _statusText = "Stopped";
     private bool _cleanedUp;
 
@@ -110,15 +109,9 @@ public partial class App : Application
     private void BuildTray()
     {
         _startStopItem = new ToolStripMenuItem("Start monitoring", null, (_, _) => ToggleMonitoring());
-        _pauseItem = new ToolStripMenuItem("Pause", null, (_, _) =>
-        {
-            _monitor.TogglePause();
-            UpdateTrayText();
-        });
 
         var menu = new ContextMenuStrip();
         menu.Items.Add(_startStopItem);
-        menu.Items.Add(_pauseItem);
         menu.Items.Add(new ToolStripMenuItem("Settings...", null, (_, _) => OpenSettings()));
         menu.Items.Add(new ToolStripMenuItem("Open captures folder", null, (_, _) => OpenCaptures()));
         menu.Items.Add(new ToolStripSeparator());
@@ -158,14 +151,19 @@ public partial class App : Application
 
     private static void ShowAbout()
     {
-        var version = Assembly.GetExecutingAssembly()
+        var assembly = Assembly.GetExecutingAssembly();
+        var version = assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
             ?.InformationalVersion
-            ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)
+            ?? assembly.GetName().Version?.ToString(3)
             ?? "1.0.0";
+        var company = assembly
+            .GetCustomAttribute<AssemblyCompanyAttribute>()
+            ?.Company
+            ?? "tps01";
 
         MessageBox.Show(
-            $"pay_attention\nVersion {version}\n\nWindows text-triggered screen logger.",
+            $"pay_attention\nVersion {version}\nAuthor: {company}\n\nWindows text-triggered screen logger.",
             "About pay_attention",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
@@ -192,11 +190,6 @@ public partial class App : Application
         _tray.Text = Truncate($"pay_attention - {state}");
         if (_startStopItem is not null)
             _startStopItem.Text = _monitor.IsRunning ? "Stop monitoring" : "Start monitoring";
-        if (_pauseItem is not null)
-        {
-            _pauseItem.Enabled = _monitor.IsRunning;
-            _pauseItem.Text = _monitor.IsPaused ? "Resume" : "Pause";
-        }
     }
 
     private static string Truncate(string text) =>
