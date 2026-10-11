@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Text.Json;
 using PayAttention.Core.Models;
@@ -20,6 +21,13 @@ public sealed class TriggerFiredEventArgs : EventArgs
 
 public sealed class CaptureMonitor : IDisposable
 {
+    /// <summary>
+    /// Wall-clock budget for OCR fallbacks (ROI / tiles / bands) after first-tier passes.
+    /// Prefer a fresher queued frame over exhausting a stale cascade while scrolling.
+    /// </summary>
+    /// <summary>When the OCR queue is backed up and triggers are Fast, prefer fresher frames.</summary>
+    private static readonly TimeSpan OcrCascadeBudgetBacklog = TimeSpan.FromMilliseconds(400);
+
     private readonly ScreenGrabber _grabber = new();
     private readonly OcrService _ocr = new();
     private readonly CaptureWriter _writer = new();
@@ -32,6 +40,7 @@ public sealed class CaptureMonitor : IDisposable
     private AppConfig _config;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
+    private OcrFrameQueue? _ocrQueue;
     private bool _paused;
     private bool _disposed;
 
@@ -87,7 +96,8 @@ public sealed class CaptureMonitor : IDisposable
 
         _paused = false;
         _cts = new CancellationTokenSource();
-        _loopTask = Task.Run(() => RunLoopAsync(_cts.Token));
+        _ocrQueue = new OcrFrameQueue();
+        _loopTask = Task.Run(() => RunPipelineAsync(_cts.Token));
         RaiseStatus("Monitoring", "OCR monitoring started.");
         _logger.Info("Monitoring started.");
     }
@@ -98,6 +108,7 @@ public sealed class CaptureMonitor : IDisposable
             return;
 
         _cts?.Cancel();
+        _ocrQueue?.Complete();
         try
         {
             _loopTask?.Wait(TimeSpan.FromSeconds(5));
@@ -107,6 +118,8 @@ public sealed class CaptureMonitor : IDisposable
             // ignore cancellation
         }
 
+        _ocrQueue?.Dispose();
+        _ocrQueue = null;
         _cts?.Dispose();
         _cts = null;
         _loopTask = null;
@@ -126,9 +139,28 @@ public sealed class CaptureMonitor : IDisposable
 
     public void TogglePause() => SetPaused(!_paused);
 
-    private async Task RunLoopAsync(CancellationToken token)
+    private async Task RunPipelineAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.WhenAll(
+                RunCaptureLoopAsync(token),
+                RunOcrWorkerAsync(token)).ConfigureAwait(false);
+        }
+        finally
+        {
+            _ocrQueue?.Complete();
+        }
+    }
+
+    /// <summary>
+    /// High-frequency grab producer: capture on OcrIntervalMs period, enqueue clones for OCR.
+    /// Never awaits OCR so short-lived scrolling lines still get sampled.
+    /// </summary>
+    private async Task RunCaptureLoopAsync(CancellationToken token)
     {
         var retentionCounter = 0;
+        var queue = _ocrQueue ?? throw new InvalidOperationException("OCR queue not initialized.");
 
         while (!token.IsCancellationRequested)
         {
@@ -136,28 +168,51 @@ public sealed class CaptureMonitor : IDisposable
             lock (_configLock)
                 config = _config;
 
-            var interval = TimeSpan.FromMilliseconds(config.OcrIntervalMs);
+            var interval = TimeSpan.FromMilliseconds(Math.Max(1, config.OcrIntervalMs));
+            var cycle = Stopwatch.StartNew();
 
             try
             {
                 if (_paused)
                 {
-                    await Task.Delay(interval, token).ConfigureAwait(false);
+                    await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
+                    continue;
+                }
+
+                var foregroundProcess = _grabber.GetForegroundProcessName();
+
+                // Whitelist-only: tell the skip gate which listed processes are alive (cheap
+                // GetProcessesByName). All / AllMinusBlacklisted ignore this snapshot.
+                IEnumerable<string>? runningWhitelist = null;
+                if (config.ApplicationScope == ApplicationScopeMode.Whitelisted)
+                {
+                    var whitelist = ApplicationScopeEvaluator.GetWhitelistProcessNames(config);
+                    runningWhitelist = whitelist.Count > 0 && _grabber.AnyNamedProcessRunning(whitelist)
+                        ? whitelist
+                        : Array.Empty<string>();
+                }
+
+                if (ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, foregroundProcess, runningWhitelist))
+                {
+                    await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
                     continue;
                 }
 
                 using var frame = Grab(config);
-                var foregroundProcess = _grabber.GetForegroundProcessName();
-
-                if (ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, foregroundProcess))
+                if (frame is null)
                 {
-                    await Task.Delay(interval, token).ConfigureAwait(false);
+                    await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
                     continue;
                 }
 
                 var maskNames = ApplicationScopeEvaluator.GetBlacklistProcessNamesToMask(config);
                 if (maskNames.Count > 0)
-                    _grabber.MaskProcessWindows(frame.Bitmap, frame.ScreenBounds, maskNames);
+                {
+                    var masked = _grabber.MaskProcessWindows(frame.Bitmap, frame.ScreenBounds, maskNames);
+                    if (masked == 0)
+                        _logger.Warn(
+                            $"Blacklist mask: no window overlap with capture bounds ({frame.ScreenBounds.Width}x{frame.ScreenBounds.Height} @({frame.ScreenBounds.X},{frame.ScreenBounds.Y})) for: {string.Join(", ", maskNames)}");
+                }
 
                 var needsRecordRing = config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Record);
                 if (needsRecordRing)
@@ -167,18 +222,7 @@ public sealed class CaptureMonitor : IDisposable
                 if (needsSequenceRing)
                     _sequenceRing.TryAdd(frame.Bitmap, frame.Timestamp, config.RecordJpegQuality);
 
-                var text = await RecognizeFrameAsync(config, frame, token).ConfigureAwait(false);
-                var matches = TriggerMatcher.FindMatches(text, config.Triggers)
-                    .Where(m => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, m.Trigger.Id));
-
-                var debounceSeconds = ApplicationScopeEvaluator.GetEffectiveDebounceSeconds(config, foregroundProcess);
-                foreach (var match in matches)
-                {
-                    var key = $"{match.Trigger.Id}:{match.MatchedPortion}";
-                    var fingerprint = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
-                    if (_fireGate.ShouldFire(key, TimeSpan.FromSeconds(debounceSeconds), fingerprint))
-                        QueueCaptureWrite(config, frame, match, text);
-                }
+                queue.TryEnqueueIfChanged(frame, foregroundProcess);
 
                 retentionCounter++;
                 if (retentionCounter % 60 == 0)
@@ -195,13 +239,13 @@ public sealed class CaptureMonitor : IDisposable
             }
             catch (Exception ex)
             {
-                _logger.Error("Monitor loop iteration failed", ex);
+                _logger.Error("Capture loop iteration failed", ex);
                 RaiseStatus("Warning", ex.Message);
             }
 
             try
             {
-                await Task.Delay(interval, token).ConfigureAwait(false);
+                await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -210,8 +254,79 @@ public sealed class CaptureMonitor : IDisposable
         }
     }
 
-    private CapturedFrame Grab(AppConfig config)
+    /// <summary>
+    /// OCR consumer: drain queued frames, match triggers, queue capture writes.
+    /// </summary>
+    private async Task RunOcrWorkerAsync(CancellationToken token)
     {
+        var queue = _ocrQueue ?? throw new InvalidOperationException("OCR queue not initialized.");
+
+        while (!token.IsCancellationRequested)
+        {
+            OcrQueuedFrame? queued = null;
+            try
+            {
+                queued = await queue.ReadAsync(token).ConfigureAwait(false);
+                if (queued is null)
+                    break;
+
+                AppConfig config;
+                lock (_configLock)
+                    config = _config;
+
+                var captured = queued.ToCapturedFrame();
+                // Only apply backlog Fast budget when more frames are already waiting.
+                // Idle worker (PendingCount == 0) gets a full Fast first-tier on this sample.
+                var pendingBehind = queue.PendingCount;
+                var text = await RecognizeFrameAsync(config, captured, token, pendingBehind)
+                    .ConfigureAwait(false);
+                var foregroundProcess = queued.ForegroundProcess;
+                var matches = TriggerMatcher.FindMatches(text, config.Triggers, config.FastMatchThresholdPercent)
+                    .Where(m => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, m.Trigger.Id))
+                    .ToList();
+
+                var debounceSeconds = ApplicationScopeEvaluator.GetEffectiveDebounceSeconds(config, foregroundProcess);
+                foreach (var match in matches)
+                {
+                    var key = $"{match.Trigger.Id}:{match.MatchedPortion}";
+                    if (_fireGate.ShouldFire(key, TimeSpan.FromSeconds(debounceSeconds), queued.Fingerprint))
+                        QueueCaptureWrite(config, captured, match, text);
+                }
+
+                // After a miss, allow another sample even if the scene looks unchanged
+                // (page paint / Fast cold-start). Fingerprint skip would otherwise stick.
+                if (!AllEnabledMatched(text, config))
+                    queue.AllowResample();
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error("OCR worker iteration failed", ex);
+                RaiseStatus("Warning", ex.Message);
+            }
+            finally
+            {
+                queued?.Dispose();
+            }
+        }
+    }
+
+    private static async Task DelayCapturePeriodAsync(TimeSpan interval, Stopwatch cycle, CancellationToken token)
+    {
+        var remaining = interval - cycle.Elapsed;
+        if (remaining > TimeSpan.Zero)
+            await Task.Delay(remaining, token).ConfigureAwait(false);
+    }
+
+    private CapturedFrame? Grab(AppConfig config)
+    {
+        var whitelistNames = ApplicationScopeEvaluator.GetWhitelistProcessNames(config);
+        if (whitelistNames.Count > 0)
+            return _grabber.TryCaptureProcessWindows(whitelistNames);
+
         if (config.CaptureScope == CaptureScope.ForegroundWindow)
         {
             var foreground = _grabber.TryCaptureForegroundWindow();
@@ -232,8 +347,15 @@ public sealed class CaptureMonitor : IDisposable
     /// small or dark-terminal text is more likely to be recovered.
     /// When capturing the full virtual desktop, OCR each physical monitor separately.
     /// </summary>
-    private async Task<string> RecognizeFrameAsync(AppConfig config, CapturedFrame frame, CancellationToken token)
+    private async Task<string> RecognizeFrameAsync(
+        AppConfig config,
+        CapturedFrame frame,
+        CancellationToken token,
+        int pendingBehind = 0)
     {
+        var cascadeClock = Stopwatch.StartNew();
+        var cascade = new CascadeContext(config, cascadeClock, pendingBehind);
+
         if (config.CaptureScope == CaptureScope.Monitor &&
             config.MonitorSelection == MonitorSelection.All)
         {
@@ -243,21 +365,39 @@ public sealed class CaptureMonitor : IDisposable
                 var parts = new List<string>(monitors.Count);
                 foreach (var monitor in monitors)
                 {
+                    var soFar = string.Join("\n", parts);
+                    // Only stop the All-pass when every trigger matched — never because
+                    // monitor 0 burned the Fast time budget (each monitor gets its own clock).
+                    if (AllEnabledMatched(soFar, config))
+                        break;
+
+                    // Fresh cascade budget per monitor; backlog pressure only on the first.
+                    var monitorPending = parts.Count == 0 ? pendingBehind : 0;
+                    var monitorCascade = new CascadeContext(config, Stopwatch.StartNew(), monitorPending);
+
                     using var slice = _grabber.CaptureMonitor(monitor.Index);
-                    parts.Add(await RecognizeBitmapMultiPassAsync(slice.Bitmap, config, token).ConfigureAwait(false));
+                    parts.Add(await RecognizeBitmapMultiPassAsync(slice.Bitmap, monitorCascade, token)
+                        .ConfigureAwait(false));
+
+                    var joinedMonitors = string.Join("\n", parts);
+                    if (AllEnabledMatched(joinedMonitors, config))
+                        return joinedMonitors;
                 }
 
                 return string.Join("\n", parts);
             }
         }
 
-        return await RecognizeBitmapMultiPassAsync(frame.Bitmap, config, token).ConfigureAwait(false);
+        return await RecognizeBitmapMultiPassAsync(frame.Bitmap, cascade, token).ConfigureAwait(false);
     }
 
-    private async Task<string> RecognizeBitmapMultiPassAsync(Bitmap bitmap, AppConfig config, CancellationToken token)
+    private async Task<string> RecognizeBitmapMultiPassAsync(
+        Bitmap bitmap,
+        CascadeContext cascade,
+        CancellationToken token)
     {
         var chunks = new List<string>(8);
-        var enabledCount = config.Triggers.Count(t => t.Enabled && !string.IsNullOrWhiteSpace(t.Text));
+        var config = cascade.Config;
 
         // Baseline pass at configured scale (color, unmodified for OCR aside from scale).
         await AddOcrPassAsync(chunks, bitmap, config.OcrMaxWidth, config.OcrUpscalePercent, invert: false, OcrPrepMode.None, token)
@@ -279,47 +419,120 @@ public sealed class CaptureMonitor : IDisposable
         }
 
         var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
-        if (AllEnabledMatched(joined, config, enabledCount))
+        if (ShouldStopCascade(joined, cascade))
             return joined;
 
         // Only when triggers are still missing: crop neon-terminal ROIs and re-OCR hard.
-        await RecognizeTerminalRegionsAsync(chunks, bitmap, config, token).ConfigureAwait(false);
+        await RecognizeTerminalRegionsAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
         joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
-        if (AllEnabledMatched(joined, config, enabledCount))
+        if (ShouldStopCascade(joined, cascade))
             return joined;
 
-        await RecognizeTilesAsync(chunks, bitmap, config, enabledCount, token).ConfigureAwait(false);
+        await RecognizeTilesAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
         joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
-        if (AllEnabledMatched(joined, config, enabledCount))
+        if (ShouldStopCascade(joined, cascade))
             return joined;
 
         // Dense terminal lines: OCR overlapping horizontal bands at high upscale.
-        await RecognizeHorizontalBandsAsync(chunks, bitmap, config, token).ConfigureAwait(false);
+        await RecognizeHorizontalBandsAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
         return string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
     }
 
-    private static bool AllEnabledMatched(string text, AppConfig config, int enabledCount) =>
-        enabledCount == 0 || TriggerMatcher.FindMatches(text, config.Triggers).Count >= enabledCount;
+    private readonly struct CascadeContext
+    {
+        public CascadeContext(AppConfig config, Stopwatch clock, int pendingBehind)
+        {
+            Config = config;
+            Clock = clock;
+            PendingBehind = pendingBehind;
+        }
+
+        public AppConfig Config { get; }
+        public Stopwatch Clock { get; }
+        public int PendingBehind { get; }
+        public int FastMatchThresholdPercent => Config.FastMatchThresholdPercent;
+    }
+
+    private static IEnumerable<TriggerConfig> EnabledTriggers(AppConfig config) =>
+        config.Triggers.Where(t => t.Enabled && !string.IsNullOrWhiteSpace(t.Text));
+
+    /// <summary>
+    /// Stop when every enabled trigger matched (screenshot+record with the same text still stop together).
+    /// </summary>
+    private static bool AllEnabledMatched(string text, AppConfig config) =>
+        AllEnabledMatched(text, config, config.FastMatchThresholdPercent);
+
+    private static bool AllEnabledMatched(string text, AppConfig config, int fastMatchThresholdPercent)
+    {
+        var enabled = EnabledTriggers(config).ToList();
+        if (enabled.Count == 0)
+            return true;
+
+        var matchedIds = TriggerMatcher.FindMatches(text, config.Triggers, fastMatchThresholdPercent)
+            .Select(m => m.Trigger.Id)
+            .ToHashSet();
+        return enabled.All(t => matchedIds.Contains(t.Id));
+    }
+
+    /// <summary>
+    /// Cascade time budget only when newer frames are already queued and every still-unmatched
+    /// trigger is Fast. Idle Fast runs full fallbacks (same depth as Thorough) so a single
+    /// hard-to-read frame is not abandoned; backlog Fast prefers fresher samples.
+    /// </summary>
+    private static bool ShouldApplyCascadeBudget(string text, CascadeContext cascade)
+    {
+        if (cascade.PendingBehind <= 0)
+            return false;
+
+        var matchedIds = TriggerMatcher.FindMatches(text, cascade.Config.Triggers, cascade.FastMatchThresholdPercent)
+            .Select(m => m.Trigger.Id)
+            .ToHashSet();
+        var unmatched = EnabledTriggers(cascade.Config).Where(t => !matchedIds.Contains(t.Id)).ToList();
+        return unmatched.Count > 0 && unmatched.All(t => t.OcrMode == OcrSpeedMode.Fast);
+    }
+
+    private static bool IsCascadeOverBudget(string text, CascadeContext cascade) =>
+        ShouldApplyCascadeBudget(text, cascade) && cascade.Clock.Elapsed >= OcrCascadeBudgetBacklog;
+
+    private static bool ShouldStopCascade(string text, CascadeContext cascade) =>
+        AllEnabledMatched(text, cascade.Config, cascade.FastMatchThresholdPercent) ||
+        IsCascadeOverBudget(text, cascade);
 
     private async Task RecognizeTerminalRegionsAsync(
         List<string> chunks,
         Bitmap bitmap,
-        AppConfig config,
+        CascadeContext cascade,
         CancellationToken token)
     {
+        var config = cascade.Config;
         var regions = ImageHelpers.FindTerminalLikeRegions(bitmap);
         var scale = Math.Max(config.OcrUpscalePercent, 300);
         var hiScale = Math.Max(config.OcrUpscalePercent, 400);
         foreach (var region in regions)
         {
+            var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+            if (ShouldStopCascade(joined, cascade))
+                return;
+
             token.ThrowIfCancellationRequested();
             using var crop = bitmap.Clone(region, bitmap.PixelFormat);
             await AddOcrPassAsync(chunks, crop, config.OcrMaxWidth, scale, invert: true, OcrPrepMode.NeonHighContrast, token)
                 .ConfigureAwait(false);
+            joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+            if (ShouldStopCascade(joined, cascade))
+                return;
+
             await AddOcrPassAsync(chunks, crop, config.OcrMaxWidth, scale, invert: false, OcrPrepMode.AdaptiveContrast, token)
                 .ConfigureAwait(false);
+            joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+            if (ShouldStopCascade(joined, cascade))
+                return;
+
             await AddOcrPassAsync(chunks, crop, config.OcrMaxWidth, hiScale, invert: true, OcrPrepMode.NeonHighContrast, token)
                 .ConfigureAwait(false);
+            joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+            if (ShouldStopCascade(joined, cascade))
+                return;
         }
     }
 
@@ -330,9 +543,10 @@ public sealed class CaptureMonitor : IDisposable
     private async Task RecognizeHorizontalBandsAsync(
         List<string> chunks,
         Bitmap bitmap,
-        AppConfig config,
+        CascadeContext cascade,
         CancellationToken token)
     {
+        var config = cascade.Config;
         var regions = ImageHelpers.FindTerminalLikeRegions(bitmap);
         if (regions.Count == 0)
             regions = [new Rectangle(0, 0, bitmap.Width, bitmap.Height)];
@@ -343,7 +557,8 @@ public sealed class CaptureMonitor : IDisposable
 
         foreach (var region in regions)
         {
-            if (bandPasses >= maxBandPasses)
+            var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+            if (bandPasses >= maxBandPasses || ShouldStopCascade(joined, cascade))
                 break;
 
             var bandHeight = Math.Max(64, region.Height / 4);
@@ -352,6 +567,10 @@ public sealed class CaptureMonitor : IDisposable
 
             for (var y = region.Top; y < region.Bottom && bandPasses < maxBandPasses; y += step)
             {
+                joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+                if (ShouldStopCascade(joined, cascade))
+                    return;
+
                 token.ThrowIfCancellationRequested();
                 var h = Math.Min(bandHeight, region.Bottom - y);
                 if (h < 40 || region.Width < 120)
@@ -368,10 +587,10 @@ public sealed class CaptureMonitor : IDisposable
     private async Task RecognizeTilesAsync(
         List<string> chunks,
         Bitmap bitmap,
-        AppConfig config,
-        int enabledCount,
+        CascadeContext cascade,
         CancellationToken token)
     {
+        var config = cascade.Config;
         var grid = ImageHelpers.ChooseOcrTileGrid(bitmap.Width, bitmap.Height);
         var maxTiles = grid * grid;
         var overlap = Math.Max(80, Math.Min(bitmap.Width, bitmap.Height) / (grid * 10));
@@ -397,25 +616,27 @@ public sealed class CaptureMonitor : IDisposable
         // Pass 1: adaptive contrast per tile.
         foreach (var rect in tiles)
         {
+            var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+            if (ShouldStopCascade(joined, cascade))
+                return;
+
             token.ThrowIfCancellationRequested();
             using var tile = bitmap.Clone(rect, bitmap.PixelFormat);
             await AddOcrPassAsync(chunks, tile, config.OcrMaxWidth, scale, invert: false, OcrPrepMode.AdaptiveContrast, token)
                 .ConfigureAwait(false);
-            var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
-            if (AllEnabledMatched(joined, config, enabledCount))
-                return;
         }
 
         // Pass 2 (only if still missing): same tiles with invert + adaptive contrast.
         foreach (var rect in tiles)
         {
+            var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+            if (ShouldStopCascade(joined, cascade))
+                return;
+
             token.ThrowIfCancellationRequested();
             using var tile = bitmap.Clone(rect, bitmap.PixelFormat);
             await AddOcrPassAsync(chunks, tile, config.OcrMaxWidth, scale, invert: true, OcrPrepMode.AdaptiveContrast, token)
                 .ConfigureAwait(false);
-            var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
-            if (AllEnabledMatched(joined, config, enabledCount))
-                return;
         }
     }
 
@@ -552,6 +773,8 @@ public sealed class CaptureMonitor : IDisposable
                                 break;
 
                             using var postFrame = Grab(config);
+                            if (postFrame is null)
+                                break;
                             _writer.WriteSequenceStill(
                                 path,
                                 triggerTime,

@@ -14,6 +14,16 @@ public enum MatchMode
     Regex = 2
 }
 
+/// <summary>
+/// Per-trigger OCR thoroughness. Thorough (default) runs the full multi-pass cascade.
+/// Fast budgets fallbacks so briefly visible text can be sampled more often.
+/// </summary>
+public enum OcrSpeedMode
+{
+    Thorough = 0,
+    Fast = 1
+}
+
 public enum MonitorSelection
 {
     Primary = 0,
@@ -50,4 +60,12 @@ public enum ApplicationScopeMode
     All = 0,
     Whitelisted = 1,
     AllMinusBlacklisted = 2
+}
+
+/// <summary>Which triggers an application row applies to.</summary>
+public enum ApplicationTriggerFilter
+{
+    All = 0,
+    Selected = 1,
+    None = 2
 }

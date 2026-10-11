@@ -4,13 +4,15 @@ using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input;
 using PayAttention.Capture;
 using PayAttention.Core.Models;
 using PayAttention.Core.Services;
 using Button = System.Windows.Controls.Button;
+using ComboBox = System.Windows.Controls.ComboBox;
+using ListBox = System.Windows.Controls.ListBox;
 using MessageBox = System.Windows.MessageBox;
 using Orientation = System.Windows.Controls.Orientation;
+using SelectionMode = System.Windows.Controls.SelectionMode;
 
 namespace PayAttention;
 
@@ -22,8 +24,8 @@ public partial class SettingsWindow : Window
     private readonly ObservableCollection<TriggerConfig> _triggers;
     private readonly ObservableCollection<ApplicationRow> _applications;
     private readonly ScreenGrabber _grabber = new();
-    private ApplicationRow? _associatingApp;
-    private bool _syncingTriggerSelection;
+    private bool _loadingUi;
+    private bool _handlingTriggerFilter;
 
     public event EventHandler<AppConfig>? ConfigSaved;
 
@@ -34,9 +36,6 @@ public partial class SettingsWindow : Window
         _monitor = monitor;
         _logger = logger;
 
-        MatchColumn.ItemsSource = Enum.GetValues(typeof(MatchMode));
-        ActionColumn.ItemsSource = Enum.GetValues(typeof(CaptureAction));
-        ListModeColumn.ItemsSource = Enum.GetValues(typeof(ApplicationListMode));
         MonitorModeBox.ItemsSource = Enum.GetValues(typeof(MonitorSelection));
         CaptureScopeBox.ItemsSource = Enum.GetValues(typeof(CaptureScope));
         RecordFormatBox.ItemsSource = Enum.GetValues(typeof(RecordFormat));
@@ -57,8 +56,19 @@ public partial class SettingsWindow : Window
 
     private void ApplyConfigToUi(AppConfig config)
     {
-        ExitTriggerAssociationMode();
+        _loadingUi = true;
+        try
+        {
+            ApplyConfigToUiCore(config);
+        }
+        finally
+        {
+            _loadingUi = false;
+        }
+    }
 
+    private void ApplyConfigToUiCore(AppConfig config)
+    {
         _triggers.Clear();
         foreach (var t in config.Triggers)
         {
@@ -68,20 +78,19 @@ public partial class SettingsWindow : Window
                 Text = t.Text,
                 Match = t.Match,
                 Action = t.Action,
+                OcrMode = t.OcrMode,
                 Enabled = t.Enabled
             });
         }
 
         _applications.Clear();
         foreach (var a in config.Applications ?? [])
-        {
-            var row = ApplicationRow.FromConfig(a);
-            row.RefreshTriggersDisplay(_triggers);
-            _applications.Add(row);
-        }
+            _applications.Add(ApplicationRow.FromConfig(a));
 
         CaptureDirectoryBox.Text = config.CaptureDirectory;
         OcrIntervalBox.Text = config.OcrIntervalMs.ToString();
+        FastMatchThresholdSlider.Value = Math.Clamp(config.FastMatchThresholdPercent, 50, 100);
+        UpdateFastMatchThresholdLabel();
         DebounceBox.Text = config.DebounceSeconds.ToString();
         BufferSecondsBox.Text = config.RecordBufferSeconds.ToString();
         RecordFpsBox.Text = config.RecordFps.ToString();
@@ -107,6 +116,7 @@ public partial class SettingsWindow : Window
         RefreshMonitors(config.SpecificMonitorIndex);
         MonitorMode_Changed(null, null!);
     }
+
 
     private void RefreshMonitors(int selectedIndex)
     {
@@ -141,9 +151,9 @@ public partial class SettingsWindow : Window
             Text = "New trigger",
             Match = MatchMode.Contains,
             Action = CaptureAction.Screenshot,
+            OcrMode = OcrSpeedMode.Thorough,
             Enabled = true
         });
-        RefreshAllApplicationTriggerDisplays();
     }
 
     private void RemoveTrigger_Click(object sender, RoutedEventArgs e)
@@ -156,36 +166,31 @@ public partial class SettingsWindow : Window
         {
             _triggers.Remove(selected);
             foreach (var app in _applications)
+            {
                 app.TriggerIds.RemoveAll(id => id == selected.Id);
+                if (app.TriggerFilter == ApplicationTriggerFilter.Selected && app.TriggerIds.Count == 0)
+                    app.TriggerFilter = ApplicationTriggerFilter.None;
+            }
         }
-
-        RefreshAllApplicationTriggerDisplays();
-        if (_associatingApp is not null)
-            SyncTriggerGridSelectionFromApp(_associatingApp);
     }
 
     private void AddApplication_Click(object sender, RoutedEventArgs e)
     {
-        var row = new ApplicationRow
+        _applications.Add(new ApplicationRow
         {
             Id = Guid.NewGuid(),
             Enabled = true,
             ProcessName = "",
             ListMode = ApplicationListMode.Whitelist,
-            DebounceSeconds = 30
-        };
-        row.RefreshTriggersDisplay(_triggers);
-        _applications.Add(row);
+            DebounceSeconds = 30,
+            TriggerFilter = ApplicationTriggerFilter.All
+        });
     }
 
     private void RemoveApplication_Click(object sender, RoutedEventArgs e)
     {
         if (ApplicationsGrid.SelectedItem is ApplicationRow selected)
-        {
-            if (ReferenceEquals(_associatingApp, selected))
-                ExitTriggerAssociationMode();
             _applications.Remove(selected);
-        }
     }
 
     private void PickApplication_Click(object sender, RoutedEventArgs e)
@@ -197,14 +202,22 @@ public partial class SettingsWindow : Window
         var dialog = new Window
         {
             Title = "Pick application",
-            Width = 360,
-            Height = 420,
+            Width = 420,
+            Height = 460,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
             ResizeMode = ResizeMode.CanResize
         };
 
-        var list = new System.Windows.Controls.ListBox
+        var hint = new TextBlock
+        {
+            Text = "Select a running process, or browse to an .exe (process name is stored).",
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(12, 12, 12, 0),
+            Opacity = 0.75
+        };
+
+        var list = new ListBox
         {
             ItemsSource = names,
             Margin = new Thickness(12)
@@ -217,15 +230,156 @@ public partial class SettingsWindow : Window
                 list.SelectedItem = match;
         }
 
+        var browse = new Button { Content = "Browse…", Width = 90, Margin = new Thickness(0, 0, 8, 0) };
         var ok = new Button { Content = "OK", Width = 80, IsDefault = true, Margin = new Thickness(0, 0, 8, 0) };
         var cancel = new Button { Content = "Cancel", Width = 80, IsCancel = true };
+
+        browse.Click += (_, _) =>
+        {
+            var ofd = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "Select application executable",
+                Filter = "Executables (*.exe)|*.exe|All files (*.*)|*.*",
+                CheckFileExists = true,
+                Multiselect = false
+            };
+            if (ofd.ShowDialog(dialog) != true || string.IsNullOrWhiteSpace(ofd.FileName))
+                return;
+
+            var processName = ApplicationScopeEvaluator.NormalizeProcessName(ofd.FileName);
+            if (string.IsNullOrWhiteSpace(processName))
+                return;
+
+            row.ProcessName = processName;
+            dialog.DialogResult = true;
+        };
+
         ok.Click += (_, _) =>
         {
             if (list.SelectedItem is string name)
             {
-                row.ProcessName = name;
+                row.ProcessName = ApplicationScopeEvaluator.NormalizeProcessName(name);
                 dialog.DialogResult = true;
             }
+        };
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+            Margin = new Thickness(12)
+        };
+        buttons.Children.Add(browse);
+        buttons.Children.Add(ok);
+        buttons.Children.Add(cancel);
+
+        var root = new DockPanel();
+        DockPanel.SetDock(buttons, Dock.Bottom);
+        DockPanel.SetDock(hint, Dock.Top);
+        root.Children.Add(buttons);
+        root.Children.Add(hint);
+        root.Children.Add(list);
+        dialog.Content = root;
+        dialog.ShowDialog();
+    }
+
+    private void TriggerFilterCombo_DropDownOpened(object sender, EventArgs e)
+    {
+        if (sender is ComboBox { DataContext: ApplicationRow row })
+            row.FilterBeforeEdit = row.TriggerFilter;
+    }
+
+    private void TriggerFilterCombo_DropDownClosed(object sender, EventArgs e)
+    {
+        if (_loadingUi || _handlingTriggerFilter)
+            return;
+        if (sender is not ComboBox { DataContext: ApplicationRow row })
+            return;
+
+        _handlingTriggerFilter = true;
+        try
+        {
+            if (row.TriggerFilter == ApplicationTriggerFilter.Selected)
+            {
+                if (!TryPickTriggers(row))
+                {
+                    row.TriggerFilter = row.FilterBeforeEdit;
+                    return;
+                }
+
+                row.TriggerFilter = ApplicationTriggerFilter.Selected;
+            }
+            else
+            {
+                row.TriggerIds.Clear();
+            }
+        }
+        finally
+        {
+            _handlingTriggerFilter = false;
+        }
+    }
+
+    private bool TryPickTriggers(ApplicationRow row)
+    {
+        if (_triggers.Count == 0)
+        {
+            MessageBox.Show(
+                "Add at least one trigger before choosing Selected.",
+                "pay_attention",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return false;
+        }
+
+        var dialog = new Window
+        {
+            Title = "Select triggers",
+            Width = 420,
+            Height = 460,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ResizeMode = ResizeMode.CanResize
+        };
+
+        var list = new ListBox
+        {
+            ItemsSource = _triggers,
+            DisplayMemberPath = nameof(TriggerConfig.Text),
+            SelectionMode = SelectionMode.Extended,
+            Margin = new Thickness(12)
+        };
+
+        foreach (var trigger in _triggers)
+        {
+            if (row.TriggerIds.Contains(trigger.Id))
+                list.SelectedItems.Add(trigger);
+        }
+
+        var hint = new TextBlock
+        {
+            Text = "Select one or more triggers (Ctrl+click for multiple).",
+            Margin = new Thickness(12, 12, 12, 0),
+            Opacity = 0.75,
+            TextWrapping = TextWrapping.Wrap
+        };
+
+        var ok = new Button { Content = "OK", Width = 80, IsDefault = true, Margin = new Thickness(0, 0, 8, 0) };
+        var cancel = new Button { Content = "Cancel", Width = 80, IsCancel = true };
+        ok.Click += (_, _) =>
+        {
+            if (list.SelectedItems.Count == 0)
+            {
+                MessageBox.Show(
+                    "Select at least one trigger, or choose None / All from the dropdown.",
+                    "pay_attention",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            row.TriggerIds = list.SelectedItems.Cast<TriggerConfig>().Select(t => t.Id).ToList();
+            dialog.DialogResult = true;
         };
 
         var buttons = new StackPanel
@@ -238,91 +392,14 @@ public partial class SettingsWindow : Window
         buttons.Children.Add(cancel);
 
         var root = new DockPanel();
+        DockPanel.SetDock(hint, Dock.Top);
         DockPanel.SetDock(buttons, Dock.Bottom);
+        root.Children.Add(hint);
         root.Children.Add(buttons);
         root.Children.Add(list);
         dialog.Content = root;
-        dialog.ShowDialog();
-    }
 
-    private void ApplicationTriggers_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button { Tag: ApplicationRow row })
-            return;
-
-        EnterTriggerAssociationMode(row);
-    }
-
-    private void EnterTriggerAssociationMode(ApplicationRow row)
-    {
-        _associatingApp = row;
-        TriggerAssociationHint.Text = "Select triggers in the table above";
-        TriggersGrid.SelectionMode = DataGridSelectionMode.Extended;
-        SyncTriggerGridSelectionFromApp(row);
-    }
-
-    private void ExitTriggerAssociationMode()
-    {
-        _associatingApp = null;
-        TriggerAssociationHint.Text = string.Empty;
-        _syncingTriggerSelection = true;
-        try
-        {
-            TriggersGrid.SelectionMode = DataGridSelectionMode.Single;
-            TriggersGrid.SelectedItems.Clear();
-        }
-        finally
-        {
-            _syncingTriggerSelection = false;
-        }
-    }
-
-    private void SyncTriggerGridSelectionFromApp(ApplicationRow row)
-    {
-        _syncingTriggerSelection = true;
-        try
-        {
-            TriggersGrid.SelectedItems.Clear();
-            if (row.TriggerIds.Count == 0)
-                return;
-
-            foreach (var trigger in _triggers)
-            {
-                if (row.TriggerIds.Contains(trigger.Id))
-                    TriggersGrid.SelectedItems.Add(trigger);
-            }
-        }
-        finally
-        {
-            _syncingTriggerSelection = false;
-        }
-    }
-
-    private void TriggersGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_syncingTriggerSelection || _associatingApp is null)
-            return;
-
-        _associatingApp.TriggerIds = TriggersGrid.SelectedItems
-            .Cast<TriggerConfig>()
-            .Select(t => t.Id)
-            .ToList();
-        _associatingApp.RefreshTriggersDisplay(_triggers);
-    }
-
-    private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
-    {
-        if (e.Key == Key.Escape && _associatingApp is not null)
-        {
-            ExitTriggerAssociationMode();
-            e.Handled = true;
-        }
-    }
-
-    private void RefreshAllApplicationTriggerDisplays()
-    {
-        foreach (var app in _applications)
-            app.RefreshTriggersDisplay(_triggers);
+        return dialog.ShowDialog() == true;
     }
 
     private void BrowseCapture_Click(object sender, RoutedEventArgs e)
@@ -499,6 +576,7 @@ public partial class SettingsWindow : Window
                 Text = t.Text?.Trim() ?? string.Empty,
                 Match = t.Match,
                 Action = t.Action,
+                OcrMode = t.OcrMode,
                 Enabled = t.Enabled
             }).Where(t => !string.IsNullOrWhiteSpace(t.Text)).ToList();
 
@@ -526,11 +604,16 @@ public partial class SettingsWindow : Window
             app.TriggerIds = app.TriggerIds.Where(triggerIds.Contains).ToList();
             if (app.DebounceSeconds < 1)
                 app.DebounceSeconds = 30;
+            if (app.TriggerFilter is ApplicationTriggerFilter.All or ApplicationTriggerFilter.None)
+                app.TriggerIds.Clear();
+            else if (app.TriggerIds.Count == 0)
+                app.TriggerFilter = ApplicationTriggerFilter.None;
         }
 
         return new AppConfig
         {
             OcrIntervalMs = ocrInterval,
+            FastMatchThresholdPercent = (int)Math.Round(FastMatchThresholdSlider.Value),
             DebounceSeconds = debounce,
             RecordBufferSeconds = bufferSeconds,
             RecordFps = fps,
@@ -561,6 +644,20 @@ public partial class SettingsWindow : Window
         };
     }
 
+    private void FastMatchThresholdSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (!IsLoaded)
+            return;
+        UpdateFastMatchThresholdLabel();
+    }
+
+    private void UpdateFastMatchThresholdLabel()
+    {
+        if (FastMatchThresholdLabel is null || FastMatchThresholdSlider is null)
+            return;
+        FastMatchThresholdLabel.Text = $"{(int)Math.Round(FastMatchThresholdSlider.Value)}%";
+    }
+
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 
     private sealed class MonitorOption
@@ -587,10 +684,11 @@ public partial class SettingsWindow : Window
         private string _processName = string.Empty;
         private ApplicationListMode _listMode = ApplicationListMode.Blacklist;
         private int _debounceSeconds = 30;
-        private string _triggersDisplay = "All";
+        private ApplicationTriggerFilter _triggerFilter = ApplicationTriggerFilter.All;
 
         public Guid Id { get; set; } = Guid.NewGuid();
         public List<Guid> TriggerIds { get; set; } = [];
+        public ApplicationTriggerFilter FilterBeforeEdit { get; set; } = ApplicationTriggerFilter.All;
 
         public bool Enabled
         {
@@ -616,18 +714,13 @@ public partial class SettingsWindow : Window
             set { _debounceSeconds = value; OnPropertyChanged(); }
         }
 
-        public string TriggersDisplay
+        public ApplicationTriggerFilter TriggerFilter
         {
-            get => _triggersDisplay;
-            private set { _triggersDisplay = value; OnPropertyChanged(); }
+            get => _triggerFilter;
+            set { _triggerFilter = value; OnPropertyChanged(); }
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;
-
-        public void RefreshTriggersDisplay(IEnumerable<TriggerConfig> triggers)
-        {
-            TriggersDisplay = ApplicationScopeEvaluator.FormatTriggersSummary(ToConfig(), triggers);
-        }
 
         public ApplicationConfig ToConfig() => new()
         {
@@ -636,18 +729,28 @@ public partial class SettingsWindow : Window
             ProcessName = ProcessName,
             ListMode = ListMode,
             DebounceSeconds = DebounceSeconds,
+            TriggerFilter = TriggerFilter,
             TriggerIds = TriggerIds.ToList()
         };
 
-        public static ApplicationRow FromConfig(ApplicationConfig config) => new()
+        public static ApplicationRow FromConfig(ApplicationConfig config)
         {
-            Id = config.Id == Guid.Empty ? Guid.NewGuid() : config.Id,
-            Enabled = config.Enabled,
-            ProcessName = config.ProcessName,
-            ListMode = config.ListMode,
-            DebounceSeconds = config.DebounceSeconds <= 0 ? 30 : config.DebounceSeconds,
-            TriggerIds = config.TriggerIds?.ToList() ?? []
-        };
+            var filter = config.TriggerFilter;
+            var ids = config.TriggerIds?.ToList() ?? [];
+            if (filter == ApplicationTriggerFilter.All && ids.Count > 0)
+                filter = ApplicationTriggerFilter.Selected;
+
+            return new ApplicationRow
+            {
+                Id = config.Id == Guid.Empty ? Guid.NewGuid() : config.Id,
+                Enabled = config.Enabled,
+                ProcessName = config.ProcessName,
+                ListMode = config.ListMode,
+                DebounceSeconds = config.DebounceSeconds <= 0 ? 30 : config.DebounceSeconds,
+                TriggerFilter = filter,
+                TriggerIds = ids
+            };
+        }
 
         private void OnPropertyChanged([CallerMemberName] string? name = null) =>
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

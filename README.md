@@ -107,5 +107,5 @@ pytest tests -q
 On-screen E2E (interactive session; keep harness uncovered):
 
 ```powershell
-pytest tests/test_screen_e2e.py tests/test_screen_e2e_stream.py -q
+pytest tests/test_screen_e2e.py tests/test_screen_e2e_stream.py tests/test_screen_e2e_dmesg.py -q
 ```

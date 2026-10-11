@@ -9,7 +9,14 @@ public static class ApplicationScopeEvaluator
         if (string.IsNullOrWhiteSpace(name))
             return string.Empty;
 
-        var n = name.Trim();
+        var n = name.Trim().Trim('"');
+        // Browse-for-exe may yield a full path; matching uses the process base name.
+        if (n.Contains('\\') || n.Contains('/'))
+        {
+            try { n = Path.GetFileName(n); }
+            catch { /* keep trimmed input */ }
+        }
+
         if (n.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
             n = n[..^4];
         return n;
@@ -40,16 +47,68 @@ public static class ApplicationScopeEvaluator
         return null;
     }
 
-    public static bool ShouldSkipOcrCycle(AppConfig config, string? foregroundProcessName)
+    /// <param name="runningProcessNames">
+    /// Optional snapshot of running process names (normalized or raw). Used only when
+    /// <see cref="ApplicationScopeMode.Whitelisted"/> — skip OCR if none of the
+    /// configured whitelist processes are running. Ignored for All / AllMinusBlacklisted.
+    /// </param>
+    public static bool ShouldSkipOcrCycle(
+        AppConfig config,
+        string? foregroundProcessName,
+        IEnumerable<string>? runningProcessNames = null)
     {
         return config.ApplicationScope switch
         {
+            // Capture is still PrintWindow of whitelist HWNDs (works while other apps have
+            // focus). Skip when nothing is configured, or none of those processes are alive.
             ApplicationScopeMode.Whitelisted =>
-                FindMatchingRow(config, foregroundProcessName, ApplicationListMode.Whitelist) is null,
+                ShouldSkipWhitelistOcrCycle(config, runningProcessNames),
             ApplicationScopeMode.AllMinusBlacklisted =>
                 IsFullBlacklistBlock(config, foregroundProcessName),
             _ => false
         };
+    }
+
+    private static bool ShouldSkipWhitelistOcrCycle(
+        AppConfig config,
+        IEnumerable<string>? runningProcessNames)
+    {
+        var whitelist = GetWhitelistProcessNames(config);
+        if (whitelist.Count == 0)
+            return true;
+
+        // Caller did not supply a running-process snapshot — do not skip (legacy / tests).
+        if (runningProcessNames is null)
+            return false;
+
+        var running = new HashSet<string>(
+            runningProcessNames
+                .Select(NormalizeProcessName)
+                .Where(n => n.Length > 0),
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var name in whitelist)
+        {
+            if (running.Contains(name))
+                return false;
+        }
+
+        return true;
+    }
+
+    public static IReadOnlyList<string> GetWhitelistProcessNames(AppConfig config)
+    {
+        if (config.ApplicationScope != ApplicationScopeMode.Whitelisted)
+            return Array.Empty<string>();
+
+        return (config.Applications ?? [])
+            .Where(a => a.Enabled &&
+                        a.ListMode == ApplicationListMode.Whitelist &&
+                        !string.IsNullOrWhiteSpace(a.ProcessName))
+            .Select(a => NormalizeProcessName(a.ProcessName))
+            .Where(n => n.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     public static bool IsFullBlacklistBlock(AppConfig config, string? foregroundProcessName)
@@ -57,7 +116,7 @@ public static class ApplicationScopeEvaluator
         var row = FindMatchingRow(config, foregroundProcessName, ApplicationListMode.Blacklist);
         if (row is null)
             return false;
-        return row.TriggerIds is null || row.TriggerIds.Count == 0;
+        return ResolveTriggerFilter(row) == ApplicationTriggerFilter.All;
     }
 
     public static IReadOnlyList<string> GetBlacklistProcessNamesToMask(AppConfig config)
@@ -80,7 +139,8 @@ public static class ApplicationScopeEvaluator
         return config.ApplicationScope switch
         {
             ApplicationScopeMode.Whitelisted =>
-                FindMatchingRow(config, foregroundProcessName, ApplicationListMode.Whitelist),
+                FindMatchingRow(config, foregroundProcessName, ApplicationListMode.Whitelist)
+                ?? FirstEnabledWhitelistRow(config),
             ApplicationScopeMode.AllMinusBlacklisted =>
                 FindMatchingRow(config, foregroundProcessName, ApplicationListMode.Blacklist)
                 ?? FindMatchingRow(config, foregroundProcessName, ApplicationListMode.Whitelist),
@@ -88,18 +148,28 @@ public static class ApplicationScopeEvaluator
         };
     }
 
+    private static ApplicationConfig? FirstEnabledWhitelistRow(AppConfig config) =>
+        (config.Applications ?? []).FirstOrDefault(a =>
+            a.Enabled &&
+            a.ListMode == ApplicationListMode.Whitelist &&
+            !string.IsNullOrWhiteSpace(a.ProcessName));
+
     public static bool IsTriggerAllowed(AppConfig config, string? foregroundProcessName, Guid triggerId)
     {
         var row = FindRelevantRow(config, foregroundProcessName);
         if (row is null)
             return true;
 
-        var hasFilter = row.TriggerIds is { Count: > 0 };
-        if (row.ListMode == ApplicationListMode.Whitelist)
-            return !hasFilter || row.TriggerIds!.Contains(triggerId);
-
-        // Blacklist: empty = suppress all; non-empty = suppress listed ids only
-        return hasFilter && !row.TriggerIds!.Contains(triggerId);
+        return ResolveTriggerFilter(row) switch
+        {
+            ApplicationTriggerFilter.All => row.ListMode == ApplicationListMode.Whitelist,
+            ApplicationTriggerFilter.None => row.ListMode == ApplicationListMode.Blacklist,
+            ApplicationTriggerFilter.Selected =>
+                row.ListMode == ApplicationListMode.Whitelist
+                    ? row.TriggerIds is { Count: > 0 } && row.TriggerIds.Contains(triggerId)
+                    : row.TriggerIds is not { Count: > 0 } || !row.TriggerIds.Contains(triggerId),
+            _ => true
+        };
     }
 
     public static int GetEffectiveDebounceSeconds(AppConfig config, string? foregroundProcessName)
@@ -115,6 +185,13 @@ public static class ApplicationScopeEvaluator
         {
             app.TriggerIds ??= [];
             app.TriggerIds.RemoveAll(id => !valid.Contains(id));
+
+            // Legacy configs: non-empty ids without an explicit Selected filter.
+            if (app.TriggerFilter == ApplicationTriggerFilter.All && app.TriggerIds.Count > 0)
+                app.TriggerFilter = ApplicationTriggerFilter.Selected;
+
+            if (app.TriggerFilter is ApplicationTriggerFilter.All or ApplicationTriggerFilter.None)
+                app.TriggerIds.Clear();
         }
     }
 
@@ -132,14 +209,25 @@ public static class ApplicationScopeEvaluator
             ProcessName = "PayAttention",
             ListMode = ApplicationListMode.Blacklist,
             DebounceSeconds = 30,
+            TriggerFilter = ApplicationTriggerFilter.All,
             TriggerIds = []
         }
     ];
 
     public static string FormatTriggersSummary(ApplicationConfig app, IEnumerable<TriggerConfig> triggers)
     {
+        return ResolveTriggerFilter(app) switch
+        {
+            ApplicationTriggerFilter.None => "None",
+            ApplicationTriggerFilter.All => "All",
+            _ => FormatSelectedSummary(app, triggers)
+        };
+    }
+
+    private static string FormatSelectedSummary(ApplicationConfig app, IEnumerable<TriggerConfig> triggers)
+    {
         if (app.TriggerIds is null || app.TriggerIds.Count == 0)
-            return "All";
+            return "Selected";
 
         var byId = triggers.ToDictionary(t => t.Id, t => t.Text);
         var names = app.TriggerIds
@@ -148,9 +236,20 @@ public static class ApplicationScopeEvaluator
             .ToList();
 
         if (names.Count == 0)
-            return "All";
+            return "Selected";
         if (names.Count <= 2)
             return string.Join(", ", names);
         return $"{names.Count} selected";
+    }
+
+    /// <summary>
+    /// Treats Selected with no remaining ids as None for evaluation.
+    /// </summary>
+    public static ApplicationTriggerFilter ResolveTriggerFilter(ApplicationConfig app)
+    {
+        if (app.TriggerFilter == ApplicationTriggerFilter.Selected &&
+            (app.TriggerIds is null || app.TriggerIds.Count == 0))
+            return ApplicationTriggerFilter.None;
+        return app.TriggerFilter;
     }
 }

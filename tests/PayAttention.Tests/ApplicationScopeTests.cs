@@ -6,6 +6,16 @@ namespace PayAttention.Tests;
 
 public sealed class ApplicationScopeTests
 {
+    [Theory]
+    [InlineData("firefox", "firefox")]
+    [InlineData("PayAttention.exe", "PayAttention")]
+    [InlineData(@"C:\Program Files\Foo\bar.exe", "bar")]
+    [InlineData(@"""C:\Tools\My App\my app.exe""", "my app")]
+    public void NormalizeProcessName_strips_exe_and_paths(string input, string expected)
+    {
+        Assert.Equal(expected, ApplicationScopeEvaluator.NormalizeProcessName(input));
+    }
+
     [Fact]
     public void Defaults_include_PayAttention_blacklist_and_all_minus_blacklisted_scope()
     {
@@ -78,15 +88,54 @@ public sealed class ApplicationScopeTests
     }
 
     [Fact]
-    public void Whitelist_scope_skips_when_foreground_not_listed()
+    public void Whitelist_scope_skips_only_when_no_whitelist_apps_configured()
     {
-        var config = BaseConfig(ApplicationScopeMode.Whitelisted,
+        var empty = BaseConfig(ApplicationScopeMode.Whitelisted, []);
+        Assert.True(ApplicationScopeEvaluator.ShouldSkipOcrCycle(empty, "chrome"));
+
+        var withApps = BaseConfig(ApplicationScopeMode.Whitelisted,
         [
             OnApp("firefox", ApplicationListMode.Whitelist)
         ]);
+        // FG can be anything — whitelist masking keeps non-listed windows out of OCR.
+        Assert.False(ApplicationScopeEvaluator.ShouldSkipOcrCycle(withApps, "chrome"));
+        Assert.False(ApplicationScopeEvaluator.ShouldSkipOcrCycle(withApps, "firefox.exe"));
+        Assert.Equal(["firefox"], ApplicationScopeEvaluator.GetWhitelistProcessNames(withApps));
+    }
 
-        Assert.True(ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, "chrome"));
-        Assert.False(ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, "firefox.exe"));
+    [Fact]
+    public void Whitelist_scope_skips_when_no_whitelist_process_is_running()
+    {
+        var config = BaseConfig(ApplicationScopeMode.Whitelisted,
+        [
+            OnApp("putty", ApplicationListMode.Whitelist),
+            OnApp("mobaxterm", ApplicationListMode.Whitelist)
+        ]);
+
+        Assert.True(ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, "chrome", runningProcessNames: []));
+        Assert.True(ApplicationScopeEvaluator.ShouldSkipOcrCycle(
+            config, "chrome", runningProcessNames: ["chrome", "explorer"]));
+        Assert.False(ApplicationScopeEvaluator.ShouldSkipOcrCycle(
+            config, "chrome", runningProcessNames: ["chrome", "PuTTY.exe"]));
+        // Without a running snapshot, do not skip (capture path may still find windows).
+        Assert.False(ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, "chrome"));
+    }
+
+    [Fact]
+    public void All_and_blacklist_scopes_ignore_running_process_snapshot()
+    {
+        var all = BaseConfig(ApplicationScopeMode.All, []);
+        Assert.False(ApplicationScopeEvaluator.ShouldSkipOcrCycle(
+            all, "chrome", runningProcessNames: []));
+
+        var blacklist = BaseConfig(ApplicationScopeMode.AllMinusBlacklisted,
+        [
+            OnApp("PayAttention", ApplicationListMode.Blacklist)
+        ]);
+        Assert.False(ApplicationScopeEvaluator.ShouldSkipOcrCycle(
+            blacklist, "notepad", runningProcessNames: []));
+        Assert.True(ApplicationScopeEvaluator.ShouldSkipOcrCycle(
+            blacklist, "PayAttention", runningProcessNames: []));
     }
 
     [Fact]
@@ -113,6 +162,7 @@ public sealed class ApplicationScopeTests
                 Enabled = true,
                 ProcessName = "PayAttention",
                 ListMode = ApplicationListMode.Blacklist,
+                TriggerFilter = ApplicationTriggerFilter.Selected,
                 TriggerIds = [blocked]
             }
         ]);
@@ -128,7 +178,7 @@ public sealed class ApplicationScopeTests
     }
 
     [Fact]
-    public void Whitelist_empty_trigger_ids_allows_all_triggers()
+    public void Whitelist_All_allows_all_triggers()
     {
         var t1 = Guid.NewGuid();
         var t2 = Guid.NewGuid();
@@ -147,7 +197,25 @@ public sealed class ApplicationScopeTests
     }
 
     [Fact]
-    public void Whitelist_nonempty_trigger_ids_allows_only_listed()
+    public void Whitelist_None_allows_no_triggers()
+    {
+        var t1 = Guid.NewGuid();
+        var config = BaseConfig(ApplicationScopeMode.Whitelisted,
+        [
+            new ApplicationConfig
+            {
+                Enabled = true,
+                ProcessName = "putty",
+                ListMode = ApplicationListMode.Whitelist,
+                TriggerFilter = ApplicationTriggerFilter.None
+            }
+        ]);
+
+        Assert.False(ApplicationScopeEvaluator.IsTriggerAllowed(config, "putty", t1));
+    }
+
+    [Fact]
+    public void Whitelist_Selected_allows_only_listed()
     {
         var t1 = Guid.NewGuid();
         var t2 = Guid.NewGuid();
@@ -158,6 +226,7 @@ public sealed class ApplicationScopeTests
                 Enabled = true,
                 ProcessName = "mobaxterm",
                 ListMode = ApplicationListMode.Whitelist,
+                TriggerFilter = ApplicationTriggerFilter.Selected,
                 TriggerIds = [t1]
             }
         ]);
@@ -237,6 +306,7 @@ public sealed class ApplicationScopeTests
                         ProcessName = "firefox.exe",
                         ListMode = ApplicationListMode.Whitelist,
                         DebounceSeconds = 45,
+                        TriggerFilter = ApplicationTriggerFilter.Selected,
                         TriggerIds = [triggerId]
                     }
                 ]
@@ -246,6 +316,7 @@ public sealed class ApplicationScopeTests
             var json = File.ReadAllText(path);
             Assert.Contains("\"applicationScope\": \"whitelisted\"", json);
             Assert.Contains("\"applications\"", json);
+            Assert.Contains("\"triggerFilter\": \"selected\"", json);
 
             var imported = service.ImportFrom(path);
             Assert.Equal(ApplicationScopeMode.Whitelisted, imported.ApplicationScope);
@@ -253,6 +324,7 @@ public sealed class ApplicationScopeTests
             Assert.Equal("firefox", imported.Applications[0].ProcessName);
             Assert.Equal(ApplicationListMode.Whitelist, imported.Applications[0].ListMode);
             Assert.Equal(45, imported.Applications[0].DebounceSeconds);
+            Assert.Equal(ApplicationTriggerFilter.Selected, imported.Applications[0].TriggerFilter);
             Assert.Equal([triggerId], imported.Applications[0].TriggerIds);
         }
         finally
@@ -263,7 +335,7 @@ public sealed class ApplicationScopeTests
     }
 
     [Fact]
-    public void FormatTriggersSummary_shows_All_or_names()
+    public void FormatTriggersSummary_shows_All_None_or_names()
     {
         var t1 = Guid.NewGuid();
         var t2 = Guid.NewGuid();
@@ -273,11 +345,48 @@ public sealed class ApplicationScopeTests
             new TriggerConfig { Id = t2, Text = "beta" }
         };
 
-        var all = new ApplicationConfig { TriggerIds = [] };
-        Assert.Equal("All", ApplicationScopeEvaluator.FormatTriggersSummary(all, triggers));
+        Assert.Equal("All", ApplicationScopeEvaluator.FormatTriggersSummary(
+            new ApplicationConfig { TriggerFilter = ApplicationTriggerFilter.All }, triggers));
+        Assert.Equal("None", ApplicationScopeEvaluator.FormatTriggersSummary(
+            new ApplicationConfig { TriggerFilter = ApplicationTriggerFilter.None }, triggers));
+        Assert.Equal("alpha", ApplicationScopeEvaluator.FormatTriggersSummary(
+            new ApplicationConfig
+            {
+                TriggerFilter = ApplicationTriggerFilter.Selected,
+                TriggerIds = [t1]
+            }, triggers));
+    }
 
-        var one = new ApplicationConfig { TriggerIds = [t1] };
-        Assert.Equal("alpha", ApplicationScopeEvaluator.FormatTriggersSummary(one, triggers));
+    [Fact]
+    public void Normalize_upgrades_legacy_ids_without_filter_to_Selected()
+    {
+        var keep = Guid.NewGuid();
+        var service = new ConfigService();
+        var path = Path.Combine(Path.GetTempPath(), "pa_cfg_" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            File.WriteAllText(path, $$"""
+                {
+                  "triggers": [ { "id": "{{keep}}", "text": "x", "enabled": true } ],
+                  "applications": [
+                    {
+                      "processName": "firefox",
+                      "listMode": "whitelist",
+                      "triggerIds": [ "{{keep}}" ]
+                    }
+                  ]
+                }
+                """);
+
+            var imported = service.ImportFrom(path);
+            Assert.Equal(ApplicationTriggerFilter.Selected, imported.Applications[0].TriggerFilter);
+            Assert.Equal([keep], imported.Applications[0].TriggerIds);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
     }
 
     private static AppConfig BaseConfig(ApplicationScopeMode scope, List<ApplicationConfig> apps) =>
@@ -295,6 +404,7 @@ public sealed class ApplicationScopeTests
             ProcessName = name,
             ListMode = mode,
             DebounceSeconds = 30,
+            TriggerFilter = ApplicationTriggerFilter.All,
             TriggerIds = []
         };
 }

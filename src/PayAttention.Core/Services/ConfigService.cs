@@ -133,6 +133,7 @@ public sealed class ConfigService
                     Text = "PAYATTN_EXAMPLE",
                     Match = MatchMode.Contains,
                     Action = CaptureAction.Screenshot,
+                    OcrMode = OcrSpeedMode.Thorough,
                     Enabled = false
                 }
             ],
@@ -146,6 +147,7 @@ public sealed class ConfigService
             config.CaptureDirectory = DefaultCaptureDirectory;
 
         config.OcrIntervalMs = Math.Clamp(config.OcrIntervalMs, 250, 10_000);
+        config.FastMatchThresholdPercent = Math.Clamp(config.FastMatchThresholdPercent, 50, 100);
         config.DebounceSeconds = Math.Clamp(config.DebounceSeconds, 1, 3600);
         config.RecordBufferSeconds = Math.Clamp(config.RecordBufferSeconds, 5, 120);
         config.RecordFps = Math.Clamp(config.RecordFps, 1, 15);
