@@ -218,6 +218,7 @@ internal static class Program
 
         var exitCode = 1;
         CaptureMonitor? monitor = null;
+        Form? scrollOverlay = null;
         Form? overlay = null;
         TextBox? box = null;
         System.Windows.Forms.Timer? pollTimer = null;
@@ -236,7 +237,11 @@ internal static class Program
 
         try
         {
-            overlay = CreateConsoleOverlay("pay_attention_e2e_stream", "", scrollBars: true);
+            // Scroll phase overlay (lifetime host for Application.Run). REC inject swaps to a
+            // fresh fixture form — assigning Text on a TextBox that was AppendText-scrolled
+            // leaves PrintWindow/OCR unable to recover err#42v2 even when the line looks fine.
+            scrollOverlay = CreateConsoleOverlay("pay_attention_e2e_stream", "", scrollBars: false);
+            overlay = scrollOverlay;
             box = (TextBox)overlay.Controls[0];
 
             var config = BuildConfig(captureDir);
@@ -260,7 +265,8 @@ internal static class Program
                 pollTimer?.Stop();
                 streamTimer?.Stop();
                 try { monitor?.Stop(); } catch { /* ignore */ }
-                overlay?.Close();
+                try { overlay?.Close(); } catch { /* ignore */ }
+                try { scrollOverlay?.Close(); } catch { /* ignore */ }
             }
 
             monitor.TriggerFired += (_, e) =>
@@ -340,15 +346,23 @@ internal static class Program
 
                 if (streamStep == 12)
                 {
-                    // Timed REC inject: swap to the hard fixture (known OCR-stable layout)
-                    // after scroll noise. Shot already fired; REC must still be detected late.
-                    box.Text = BuildFixtureText();
-                    box.Refresh();
-                    overlay.Refresh();
-                    System.Windows.Forms.Application.DoEvents();
+                    // Timed REC inject: hide the scrolled TextBox and show a fresh hard-style
+                    // fixture window. Reusing the scrolled TextBox via Text= breaks OCR of
+                    // REC>err#42v2< under PrintWindow (shot still matches; rec never does).
+                    streamTimer.Stop();
+                    scrollOverlay?.Hide();
+                    overlay = CreateConsoleOverlay(
+                        "pay_attention_e2e_stream_rec",
+                        BuildFixtureText(),
+                        scrollBars: false);
+                    box = (TextBox)overlay.Controls[0];
+                    // Timestamp before Show so TriggerFired during first paint counts for latency.
                     recInjectUtc = DateTime.UtcNow;
                     Console.WriteLine($"INJECT rec at {recInjectUtc:O}");
-                    streamTimer.Stop();
+                    overlay.Show();
+                    overlay.Activate();
+                    overlay.BringToFront();
+                    System.Windows.Forms.Application.DoEvents();
                 }
             };
 
@@ -419,8 +433,8 @@ internal static class Program
                 settle.Start();
             };
 
-            overlay.FormClosed += (_, _) => Application.ExitThread();
-            Application.Run(overlay);
+            // Run on the scroll host so hiding it for the fixture form does not end the loop.
+            Application.Run(scrollOverlay);
         }
         catch (Exception ex)
         {
@@ -430,7 +444,8 @@ internal static class Program
         finally
         {
             streamTimer?.Dispose();
-            Cleanup(pollTimer, monitor, overlay, workDir);
+            try { overlay?.Dispose(); } catch { /* ignore */ }
+            Cleanup(pollTimer, monitor, scrollOverlay, workDir);
         }
 
         return exitCode;
