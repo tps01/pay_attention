@@ -3,6 +3,7 @@
 from pay_attention_logic import (
     CAPTURE_SCOPE_DEFAULT,
     DEBUG_SAVE_JSON_SIDECARS_DEFAULT,
+    LOG_LEVEL_DEFAULT,
     DEBOUNCE_SECONDS_DEFAULT,
     OCR_INTERVAL_MS_DEFAULT,
     OCR_INVERT_DEFAULT,
@@ -44,6 +45,10 @@ def test_start_monitoring_default_off():
 
 def test_json_sidecars_default_off():
     assert DEBUG_SAVE_JSON_SIDECARS_DEFAULT is False
+
+
+def test_log_level_default_info():
+    assert LOG_LEVEL_DEFAULT == "info"
 
 
 def test_ocr_interval_and_debounce_defaults():

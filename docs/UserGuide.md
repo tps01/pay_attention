@@ -25,6 +25,7 @@ Only one copy should run at a time.
    - **Start** / **Stop** monitoring  
    - **Settings…**  
    - **Open captures folder**  
+   - **Open logs folder**  
    - **About…** (version)  
    - **Exit**
 3. Open **Settings**, add a **distinctive** trigger, enable it, **Save**, then **Start** monitoring.
@@ -121,6 +122,7 @@ Change the capture folder in Settings. **Import…** / **Export…** copy settin
 - **Recording** — buffer length / FPS / quality (defaults **15 s**, **3 FPS**, JPEG **60**)  
 - **Sequence** — spacing / before / after (defaults **5 / 30 / 30** s)  
 - **Start with Windows** / **Start monitoring on launch**  
+- **Log level** — `Info` (default) or `Debug` (extra OCR/match detail in `logs\`)  
 - **Retention** — auto-delete (defaults **14 days** or **200** items)  
 - **Debug JSON sidecars** — leave **off** (can store OCR text next to captures)  
 

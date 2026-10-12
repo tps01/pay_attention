@@ -26,6 +26,7 @@ public sealed class AppConfig
     public bool StartWithWindows { get; set; }
     public bool StartMonitoringOnLaunch { get; set; } = false;
     public bool DebugSaveJsonSidecars { get; set; } = false;
+    public LogLevel LogLevel { get; set; } = LogLevel.Info;
     public string PauseHotkey { get; set; } = "Ctrl+Shift+P";
     public int RetentionMaxAgeDays { get; set; } = 14;
     public int RetentionMaxFiles { get; set; } = 200;

@@ -69,3 +69,10 @@ public enum ApplicationTriggerFilter
     Selected = 1,
     None = 2
 }
+
+/// <summary>Minimum severity written to app log files.</summary>
+public enum LogLevel
+{
+    Info = 0,
+    Debug = 1
+}

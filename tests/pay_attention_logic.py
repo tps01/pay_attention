@@ -20,6 +20,7 @@ CaptureAction = Literal["screenshot", "record", "sequence"]
 # Defaults mirrored from AppConfig / ConfigService.Normalize / CreateDefault
 START_MONITORING_ON_LAUNCH_DEFAULT = False
 DEBUG_SAVE_JSON_SIDECARS_DEFAULT = False
+LOG_LEVEL_DEFAULT = "info"
 OCR_INTERVAL_MS_DEFAULT = 500
 DEBOUNCE_SECONDS_DEFAULT = 30
 APPLICATION_SCOPE_DEFAULT = "allMinusBlacklisted"

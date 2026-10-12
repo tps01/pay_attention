@@ -16,7 +16,7 @@
       <Button Content="Close" Width="90" IsCancel="True" Click="Close_Click" />
     </StackPanel>
 
-    <ScrollViewer VerticalScrollBarVisibility="Auto">
+    <ScrollViewer x:Name="SettingsScrollViewer" VerticalScrollBarVisibility="Auto">
       <StackPanel>
         <TextBlock Text="pay_attention" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4" />
         <TextBlock Text="Capture screenshots, screenshot sequences, or short recordings when trigger text appears on screen."
@@ -33,7 +33,8 @@
                       CanUserAddRows="False"
                       HeadersVisibility="Column"
                       SelectionMode="Single"
-                      MinHeight="160">
+                      MinHeight="160"
+                      PreviewMouseWheel="DataGrid_PreviewMouseWheel">
               <DataGrid.Columns>
                 <DataGridTemplateColumn Header="On" Width="40">
                   <DataGridTemplateColumn.CellTemplate>
@@ -99,7 +100,8 @@
                       CanUserAddRows="False"
                       HeadersVisibility="Column"
                       SelectionMode="Single"
-                      MinHeight="140">
+                      MinHeight="140"
+                      PreviewMouseWheel="DataGrid_PreviewMouseWheel">
               <DataGrid.Columns>
                 <DataGridTemplateColumn Header="On" Width="40">
                   <DataGridTemplateColumn.CellTemplate>
@@ -328,6 +330,7 @@
               <RowDefinition Height="Auto" />
               <RowDefinition Height="Auto" />
               <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <CheckBox x:Name="StartWithWindowsBox" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Content="Start with Windows" Margin="0,0,0,8" />
@@ -336,16 +339,21 @@
                       Content="Debug: save JSON sidecar with each capture" Margin="0,0,0,8"
                       ToolTip="Writes a .json next to each capture including OCR snippet text. Leave off unless troubleshooting — files can contain secrets." />
 
-            <TextBlock Grid.Row="3" Grid.Column="0" Text="Pause hotkey" VerticalAlignment="Center" Margin="0,0,0,8" />
-            <TextBox x:Name="HotkeyBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" Width="180" HorizontalAlignment="Left"
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="Log level" VerticalAlignment="Center" Margin="0,0,0,8"
+                       ToolTip="Info = normal operation. Debug = extra OCR/match detail in the log files." />
+            <ComboBox x:Name="LogLevelBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" Width="180" HorizontalAlignment="Left"
+                      ToolTip="Info = normal operation. Debug = extra OCR/match detail in the log files." />
+
+            <TextBlock Grid.Row="4" Grid.Column="0" Text="Pause hotkey" VerticalAlignment="Center" Margin="0,0,0,8" />
+            <TextBox x:Name="HotkeyBox" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8" Width="180" HorizontalAlignment="Left"
                      ToolTip="Example: Ctrl+Shift+P" />
 
-            <TextBlock Grid.Row="4" Grid.Column="0" Text="Retention max age (days)" VerticalAlignment="Center" Margin="0,0,0,8" />
-            <TextBox x:Name="RetentionDaysBox" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+            <TextBlock Grid.Row="5" Grid.Column="0" Text="Retention max age (days)" VerticalAlignment="Center" Margin="0,0,0,8" />
+            <TextBox x:Name="RetentionDaysBox" Grid.Row="5" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
                      ToolTip="0 = do not delete by age" />
 
-            <TextBlock Grid.Row="5" Grid.Column="0" Text="Retention max files" VerticalAlignment="Center" />
-            <TextBox x:Name="RetentionFilesBox" Grid.Row="5" Grid.Column="1" Width="120" HorizontalAlignment="Left"
+            <TextBlock Grid.Row="6" Grid.Column="0" Text="Retention max files" VerticalAlignment="Center" />
+            <TextBox x:Name="RetentionFilesBox" Grid.Row="6" Grid.Column="1" Width="120" HorizontalAlignment="Left"
                      ToolTip="0 = do not delete by count" />
           </Grid>
         </GroupBox>
