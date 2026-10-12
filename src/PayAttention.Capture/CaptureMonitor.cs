@@ -277,6 +277,10 @@ public sealed class CaptureMonitor : IDisposable
                     config = _config;
 
                 var captured = queued.ToCapturedFrame();
+                // Freeze rings at dequeue so long OCR cannot roll past the prompting scene.
+                var recordFramesAtDequeue = _ringBuffer.Snapshot();
+                var sequenceFramesAtDequeue = _sequenceRing.Snapshot();
+
                 // Live pending count: capture keeps enqueueing while OCR runs. A snapshot at
                 // start would miss backlog that arrives mid-cascade (stream shot→REC inject).
                 var ocr = await RecognizeFrameAsync(config, captured, token, () => queue.PendingCount)
@@ -288,17 +292,19 @@ public sealed class CaptureMonitor : IDisposable
                     .ToList();
 
                 var debounceSeconds = ApplicationScopeEvaluator.GetEffectiveDebounceSeconds(config, foregroundProcess);
-                foreach (var match in matches)
-                {
-                    var key = $"{match.Trigger.Id}:{match.MatchedPortion}";
-                    if (_fireGate.ShouldFire(key, TimeSpan.FromSeconds(debounceSeconds), queued.Fingerprint))
-                        QueueCaptureWrite(config, captured, match, text);
-                }
+                var debounce = TimeSpan.FromSeconds(debounceSeconds);
+                var fires = TriggerFireCoalescer.SelectFires(
+                    matches,
+                    m => _fireGate.ShouldFire($"{m.Trigger.Id}:{m.MatchedPortion}", debounce, queued.Fingerprint));
 
-                // After a miss, resample static scenes. If we cut short and newer frames are
-                // already waiting, drain those first — but once the queue is empty we must
+                if (fires.Count > 0)
+                    QueueCaptureWrites(config, captured, fires, text, recordFramesAtDequeue, sequenceFramesAtDequeue);
+
+                // After a total miss, resample static scenes. If we cut short and newer frames
+                // are already waiting, drain those first — but once the queue is empty we must
                 // clear the fingerprint or a static fixture (hard e2e) stalls forever.
-                if (!AllEnabledMatched(text, config) &&
+                // After any match, stay quiet so large trigger lists do not re-OCR forever.
+                if (matches.Count == 0 &&
                     (!ocr.CutShortForBacklog || queue.PendingCount == 0))
                     queue.AllowResample();
             }
@@ -374,9 +380,9 @@ public sealed class CaptureMonitor : IDisposable
                 foreach (var monitor in monitors)
                 {
                     var soFar = string.Join("\n", parts);
-                    // Only stop the All-pass when every trigger matched — never because
-                    // monitor 0 burned the Fast time budget (each monitor gets its own clock).
-                    if (AllEnabledMatched(soFar, config))
+                    // Stop All-pass once any trigger matched — never because monitor 0
+                    // burned the Fast time budget (each monitor gets its own clock).
+                    if (OcrCascadePolicy.AnyEnabledMatched(soFar, config))
                         break;
 
                     // Fresh cascade budget per monitor; backlog pressure only on the first.
@@ -390,7 +396,7 @@ public sealed class CaptureMonitor : IDisposable
                     cutShort |= part.CutShortForBacklog;
 
                     var joinedMonitors = string.Join("\n", parts);
-                    if (AllEnabledMatched(joinedMonitors, config))
+                    if (OcrCascadePolicy.AnyEnabledMatched(joinedMonitors, config))
                         return new OcrFrameResult(joinedMonitors, CutShortForBacklog: false);
                 }
 
@@ -429,32 +435,31 @@ public sealed class CaptureMonitor : IDisposable
         }
 
         var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
-        if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
-            return new OcrFrameResult(joined, false);
-        if (IsCascadeOverBudget(joined, cascade))
-            return new OcrFrameResult(joined, true);
+        if (ShouldStopCascade(joined, cascade))
+            return FinishCascade(joined, cascade);
 
-        // Only when triggers are still missing: crop neon-terminal ROIs and re-OCR hard.
+        // Only when no trigger matched yet: crop neon-terminal ROIs and re-OCR hard.
         await RecognizeTerminalRegionsAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
         joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
-        if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
-            return new OcrFrameResult(joined, false);
-        if (IsCascadeOverBudget(joined, cascade))
-            return new OcrFrameResult(joined, true);
+        if (ShouldStopCascade(joined, cascade))
+            return FinishCascade(joined, cascade);
 
         await RecognizeTilesAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
         joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
-        if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
-            return new OcrFrameResult(joined, false);
-        if (IsCascadeOverBudget(joined, cascade))
-            return new OcrFrameResult(joined, true);
+        if (ShouldStopCascade(joined, cascade))
+            return FinishCascade(joined, cascade);
 
         // Dense terminal lines: OCR overlapping horizontal bands at high upscale.
         await RecognizeHorizontalBandsAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
         joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
-        if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
-            return new OcrFrameResult(joined, false);
-        return new OcrFrameResult(joined, IsCascadeOverBudget(joined, cascade));
+        return FinishCascade(joined, cascade);
+    }
+
+    private static OcrFrameResult FinishCascade(string joined, CascadeContext cascade)
+    {
+        if (OcrCascadePolicy.AnyEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
+            return new OcrFrameResult(joined, CutShortForBacklog: false);
+        return new OcrFrameResult(joined, IsCascadeOverBudget(cascade));
     }
 
     private readonly struct CascadeContext
@@ -475,54 +480,30 @@ public sealed class CaptureMonitor : IDisposable
         public int FastMatchThresholdPercent => Config.FastMatchThresholdPercent;
     }
 
-    private static IEnumerable<TriggerConfig> EnabledTriggers(AppConfig config) =>
-        config.Triggers.Where(t => t.Enabled && !string.IsNullOrWhiteSpace(t.Text));
-
-    /// <summary>
-    /// Stop when every enabled trigger matched (screenshot+record with the same text still stop together).
-    /// </summary>
-    private static bool AllEnabledMatched(string text, AppConfig config) =>
-        AllEnabledMatched(text, config, config.FastMatchThresholdPercent);
-
-    private static bool AllEnabledMatched(string text, AppConfig config, int fastMatchThresholdPercent)
-    {
-        var enabled = EnabledTriggers(config).ToList();
-        if (enabled.Count == 0)
-            return true;
-
-        var matchedIds = TriggerMatcher.FindMatches(text, config.Triggers, fastMatchThresholdPercent)
-            .Select(m => m.Trigger.Id)
-            .ToHashSet();
-        return enabled.All(t => matchedIds.Contains(t.Id));
-    }
-
     /// <summary>
     /// When newer frames are already queued, cut the cascade short so OCR can catch up
     /// (e.g. scroll noise after a shot inject before a later REC fixture). Idle workers
-    /// (no backlog) always run the full cascade — Fast and Thorough alike.
+    /// (no backlog) always run the full cascade until any trigger matches.
     /// </summary>
     private static bool ShouldApplyCascadeBudget(CascadeContext cascade) =>
         cascade.PendingBehind > 0;
 
-    private static TimeSpan CascadeBudgetFor(string text, CascadeContext cascade)
-    {
-        var matchedIds = TriggerMatcher.FindMatches(text, cascade.Config.Triggers, cascade.FastMatchThresholdPercent)
-            .Select(m => m.Trigger.Id)
-            .ToHashSet();
-        var unmatched = EnabledTriggers(cascade.Config).Where(t => !matchedIds.Contains(t.Id)).ToList();
-        if (unmatched.Count == 0)
-            return OcrCascadeBudgetBacklogFast;
-        return unmatched.All(t => t.OcrMode == OcrSpeedMode.Fast)
-            ? OcrCascadeBudgetBacklogFast
-            : OcrCascadeBudgetBacklogThorough;
-    }
-
-    private static bool IsCascadeOverBudget(string text, CascadeContext cascade) =>
-        ShouldApplyCascadeBudget(cascade) && cascade.Clock.Elapsed >= CascadeBudgetFor(text, cascade);
+    private static bool IsCascadeOverBudget(CascadeContext cascade) =>
+        ShouldApplyCascadeBudget(cascade) &&
+        cascade.Clock.Elapsed >= OcrCascadePolicy.CascadeBudgetFor(
+            cascade.Config,
+            OcrCascadeBudgetBacklogFast,
+            OcrCascadeBudgetBacklogThorough);
 
     private static bool ShouldStopCascade(string text, CascadeContext cascade) =>
-        AllEnabledMatched(text, cascade.Config, cascade.FastMatchThresholdPercent) ||
-        IsCascadeOverBudget(text, cascade);
+        OcrCascadePolicy.ShouldStopCascade(
+            text,
+            cascade.Config,
+            applyBudget: ShouldApplyCascadeBudget(cascade),
+            elapsed: cascade.Clock.Elapsed,
+            fastBudget: OcrCascadeBudgetBacklogFast,
+            thoroughBudget: OcrCascadeBudgetBacklogThorough,
+            fastMatchThresholdPercent: cascade.FastMatchThresholdPercent);
 
     private async Task RecognizeTerminalRegionsAsync(
         List<string> chunks,
@@ -698,27 +679,27 @@ public sealed class CaptureMonitor : IDisposable
 
     /// <summary>
     /// Persist captures from the original color frame. OCR preprocessing never feeds this path.
+    /// One shared clone covers same-phrase multi-action siblings (Screenshot + Record).
     /// </summary>
-    private void QueueCaptureWrite(AppConfig config, CapturedFrame frame, TriggerMatchResult match, string ocrText)
+    private void QueueCaptureWrites(
+        AppConfig config,
+        CapturedFrame frame,
+        IReadOnlyList<TriggerMatchResult> fires,
+        string ocrText,
+        IReadOnlyList<BufferedFrame> recordFrames,
+        IReadOnlyList<BufferedFrame> sequenceFrames)
     {
-        RaiseStatus("Saving", $"Saving '{match.Trigger.Text}'…");
+        if (fires.Count == 0)
+            return;
+
+        var primary = fires[0];
+        var siblingNote = fires.Count > 1
+            ? $" (+{fires.Count - 1} same-phrase action(s))"
+            : "";
+        RaiseStatus("Saving", $"Saving '{primary.Trigger.Text}'{siblingNote}…");
 
         var snippet = ocrText.Length <= 280 ? ocrText : ocrText[..280];
-        var sidecar = new CaptureSidecar
-        {
-            Timestamp = frame.Timestamp,
-            MatchedText = match.MatchedPortion,
-            TriggerText = match.Trigger.Text,
-            MatchMode = match.Trigger.Match,
-            Action = match.Trigger.Action,
-            MonitorIndex = frame.MonitorIndex,
-            MonitorName = frame.MonitorName,
-            OcrSnippet = snippet
-        };
-
         var clone = (Bitmap)frame.Bitmap.Clone();
-        var action = match.Trigger.Action;
-        var triggerText = match.Trigger.Text;
         var captureDirectory = config.CaptureDirectory;
         var saveJson = config.DebugSaveJsonSidecars;
         var screenshotFormat = config.ScreenshotFormat;
@@ -728,111 +709,123 @@ public sealed class CaptureMonitor : IDisposable
         var sequenceAfterSeconds = config.SequenceAfterSeconds;
         var sequenceIntervalSeconds = config.SequenceIntervalSeconds;
         var triggerTime = frame.Timestamp;
-        IReadOnlyList<BufferedFrame>? recordFrames = null;
-        IReadOnlyList<BufferedFrame>? sequenceFrames = null;
-        if (action == CaptureAction.Record)
-            recordFrames = _ringBuffer.Snapshot();
-        if (action == CaptureAction.Sequence)
-            sequenceFrames = _sequenceRing.Snapshot();
-
+        var monitorIndex = frame.MonitorIndex;
+        var monitorName = frame.MonitorName;
         var cancelToken = _cts?.Token ?? CancellationToken.None;
 
         _ = Task.Run(() =>
         {
             try
             {
-                string path;
-                if (action == CaptureAction.Record)
+                foreach (var match in fires)
                 {
-                    if (recordFrames is null || recordFrames.Count == 0)
+                    var action = match.Trigger.Action;
+                    var triggerText = match.Trigger.Text;
+                    var sidecar = new CaptureSidecar
                     {
-                        sidecar.Action = CaptureAction.Screenshot;
-                        path = _writer.WriteScreenshot(
-                            clone, sidecar, captureDirectory, screenshotFormat, jpegQuality, saveJson);
-                        _logger.Warn($"Record buffer empty for '{triggerText}', wrote screenshot instead.");
+                        Timestamp = triggerTime,
+                        MatchedText = match.MatchedPortion,
+                        TriggerText = triggerText,
+                        MatchMode = match.Trigger.Match,
+                        Action = action,
+                        MonitorIndex = monitorIndex,
+                        MonitorName = monitorName,
+                        OcrSnippet = snippet
+                    };
+
+                    string path;
+                    if (action == CaptureAction.Record)
+                    {
+                        if (recordFrames.Count == 0)
+                        {
+                            sidecar.Action = CaptureAction.Screenshot;
+                            path = _writer.WriteScreenshot(
+                                clone, sidecar, captureDirectory, screenshotFormat, jpegQuality, saveJson);
+                            _logger.Warn($"Record buffer empty for '{triggerText}', wrote screenshot instead.");
+                        }
+                        else
+                        {
+                            path = _writer.WriteRecording(
+                                recordFrames,
+                                clone,
+                                sidecar,
+                                captureDirectory,
+                                recordFps,
+                                recordFormat,
+                                screenshotFormat,
+                                jpegQuality,
+                                saveJson);
+                        }
                     }
-                    else
+                    else if (action == CaptureAction.Sequence)
                     {
-                        path = _writer.WriteRecording(
-                            recordFrames,
+                        path = _writer.WriteScreenshotSequence(
+                            sequenceFrames,
                             clone,
                             sidecar,
                             captureDirectory,
-                            recordFps,
-                            recordFormat,
                             screenshotFormat,
                             jpegQuality,
                             saveJson);
-                    }
-                }
-                else if (action == CaptureAction.Sequence)
-                {
-                    path = _writer.WriteScreenshotSequence(
-                        sequenceFrames ?? Array.Empty<BufferedFrame>(),
-                        clone,
-                        sidecar,
-                        captureDirectory,
-                        screenshotFormat,
-                        jpegQuality,
-                        saveJson);
 
-                    if (sequenceAfterSeconds > 0)
-                    {
-                        var deadline = triggerTime.AddSeconds(sequenceAfterSeconds);
-                        var nextAt = triggerTime.AddSeconds(sequenceIntervalSeconds);
-                        while (DateTimeOffset.UtcNow < deadline && !cancelToken.IsCancellationRequested)
+                        if (sequenceAfterSeconds > 0)
                         {
-                            var delay = nextAt - DateTimeOffset.UtcNow;
-                            if (delay > TimeSpan.Zero)
+                            var deadline = triggerTime.AddSeconds(sequenceAfterSeconds);
+                            var nextAt = triggerTime.AddSeconds(sequenceIntervalSeconds);
+                            while (DateTimeOffset.UtcNow < deadline && !cancelToken.IsCancellationRequested)
                             {
-                                try
+                                var delay = nextAt - DateTimeOffset.UtcNow;
+                                if (delay > TimeSpan.Zero)
                                 {
-                                    Task.Delay(delay, cancelToken).GetAwaiter().GetResult();
+                                    try
+                                    {
+                                        Task.Delay(delay, cancelToken).GetAwaiter().GetResult();
+                                    }
+                                    catch (OperationCanceledException)
+                                    {
+                                        break;
+                                    }
                                 }
-                                catch (OperationCanceledException)
-                                {
+
+                                if (cancelToken.IsCancellationRequested)
                                     break;
-                                }
+
+                                using var postFrame = Grab(config);
+                                if (postFrame is null)
+                                    break;
+                                _writer.WriteSequenceStill(
+                                    path,
+                                    triggerTime,
+                                    postFrame.Timestamp,
+                                    postFrame.Bitmap,
+                                    screenshotFormat,
+                                    jpegQuality);
+                                nextAt = nextAt.AddSeconds(sequenceIntervalSeconds);
                             }
-
-                            if (cancelToken.IsCancellationRequested)
-                                break;
-
-                            using var postFrame = Grab(config);
-                            if (postFrame is null)
-                                break;
-                            _writer.WriteSequenceStill(
-                                path,
-                                triggerTime,
-                                postFrame.Timestamp,
-                                postFrame.Bitmap,
-                                screenshotFormat,
-                                jpegQuality);
-                            nextAt = nextAt.AddSeconds(sequenceIntervalSeconds);
                         }
                     }
-                }
-                else
-                {
-                    path = _writer.WriteScreenshot(
-                        clone, sidecar, captureDirectory, screenshotFormat, jpegQuality, saveJson);
-                }
+                    else
+                    {
+                        path = _writer.WriteScreenshot(
+                            clone, sidecar, captureDirectory, screenshotFormat, jpegQuality, saveJson);
+                    }
 
-                var displayName = action == CaptureAction.Sequence
-                    ? Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
-                    : Path.GetFileName(path);
-                _logger.Info($"Trigger '{triggerText}' fired ({sidecar.Action}) -> {path}");
-                RaiseStatus("Triggered", $"{triggerText} → {displayName}");
-                TriggerFired?.Invoke(this, new TriggerFiredEventArgs
-                {
-                    TriggerText = triggerText,
-                    Action = sidecar.Action,
-                    OutputPath = path
-                });
+                    var displayName = action == CaptureAction.Sequence
+                        ? Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+                        : Path.GetFileName(path);
+                    _logger.Info($"Trigger '{triggerText}' fired ({sidecar.Action}) -> {path}");
+                    RaiseStatus("Triggered", $"{triggerText} → {displayName}");
+                    TriggerFired?.Invoke(this, new TriggerFiredEventArgs
+                    {
+                        TriggerText = triggerText,
+                        Action = sidecar.Action,
+                        OutputPath = path
+                    });
+                }
             }
             catch (Exception ex)
             {
-                _logger.Error($"Failed to save capture for '{triggerText}'", ex);
+                _logger.Error($"Failed to save capture for '{primary.Trigger.Text}'", ex);
                 RaiseStatus("Warning", ex.Message);
             }
             finally

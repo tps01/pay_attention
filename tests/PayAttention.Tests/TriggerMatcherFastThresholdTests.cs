@@ -73,4 +73,45 @@ public class TriggerMatcherFastThresholdTests
         var score = TriggerMatcher.BestCompactSimilarityPercent(hay, needle);
         Assert.InRange(score, 65, 75);
     }
+
+    [Fact]
+    public void HasAnyMatch_true_without_scanning_remaining_triggers()
+    {
+        var triggers = new[]
+        {
+            new TriggerConfig { Text = "first", Match = MatchMode.Contains, Enabled = true },
+            new TriggerConfig { Text = "second", Match = MatchMode.Contains, Enabled = true }
+        };
+
+        Assert.True(TriggerMatcher.HasAnyMatch("xx first yy", triggers));
+        Assert.False(TriggerMatcher.HasAnyMatch("nothing", triggers));
+    }
+
+    [Fact]
+    public void FindMatch_returns_first_list_order_hit()
+    {
+        var triggers = new[]
+        {
+            new TriggerConfig { Text = "beta", Match = MatchMode.Contains, Enabled = true },
+            new TriggerConfig { Text = "alpha", Match = MatchMode.Contains, Enabled = true }
+        };
+
+        var match = TriggerMatcher.FindMatch("alpha and beta", triggers);
+        Assert.NotNull(match);
+        Assert.Equal("beta", match!.Trigger.Text);
+    }
+
+    [Fact]
+    public void FindMatches_regex_invalid_pattern_is_skipped()
+    {
+        var triggers = new[]
+        {
+            new TriggerConfig { Text = "[", Match = MatchMode.Regex, Enabled = true },
+            new TriggerConfig { Text = "ok", Match = MatchMode.Contains, Enabled = true }
+        };
+
+        var matches = TriggerMatcher.FindMatches("ok token", triggers);
+        Assert.Single(matches);
+        Assert.Equal("ok", matches[0].Trigger.Text);
+    }
 }

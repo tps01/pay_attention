@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.RegularExpressions;
 using PayAttention.Core.Models;
@@ -14,16 +15,43 @@ public static class TriggerMatcher
 {
     public const int DefaultFastMatchThresholdPercent = 90;
 
+    private static readonly ConcurrentDictionary<string, Regex?> RegexCache = new(StringComparer.Ordinal);
+
+    private static readonly Regex WhitespaceCollapse = new(
+        @"[\s_]+",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex SpaceCollapse = new(
+        @"\s+",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex NonAlnum = new(
+        @"[^0-9a-z]+",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
     public static TriggerMatchResult? FindMatch(
         string ocrText,
         IEnumerable<TriggerConfig> triggers,
         int fastMatchThresholdPercent = DefaultFastMatchThresholdPercent) =>
-        FindMatches(ocrText, triggers, fastMatchThresholdPercent).FirstOrDefault();
+        MatchCore(ocrText, triggers, fastMatchThresholdPercent, stopAfterFirst: true).FirstOrDefault();
+
+    public static bool HasAnyMatch(
+        string ocrText,
+        IEnumerable<TriggerConfig> triggers,
+        int fastMatchThresholdPercent = DefaultFastMatchThresholdPercent) =>
+        MatchCore(ocrText, triggers, fastMatchThresholdPercent, stopAfterFirst: true).Count > 0;
 
     public static IReadOnlyList<TriggerMatchResult> FindMatches(
         string ocrText,
         IEnumerable<TriggerConfig> triggers,
-        int fastMatchThresholdPercent = DefaultFastMatchThresholdPercent)
+        int fastMatchThresholdPercent = DefaultFastMatchThresholdPercent) =>
+        MatchCore(ocrText, triggers, fastMatchThresholdPercent, stopAfterFirst: false);
+
+    private static List<TriggerMatchResult> MatchCore(
+        string ocrText,
+        IEnumerable<TriggerConfig> triggers,
+        int fastMatchThresholdPercent,
+        bool stopAfterFirst)
     {
         if (string.IsNullOrWhiteSpace(ocrText))
             return [];
@@ -47,20 +75,22 @@ public static class TriggerMatcher
                         string.Equals(compactHaystack, CompactAlnum(foldedNeedle), StringComparison.OrdinalIgnoreCase))
                     {
                         results.Add(new TriggerMatchResult { Trigger = trigger, MatchedPortion = trigger.Text });
+                        if (stopAfterFirst)
+                            return results;
                     }
                     break;
                 }
                 case MatchMode.Regex:
                 {
-                    try
+                    var regex = GetCachedRegex(trigger.Text);
+                    if (regex is null)
+                        break;
+                    var match = regex.Match(ocrText);
+                    if (match.Success)
                     {
-                        var match = Regex.Match(ocrText, trigger.Text, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-                        if (match.Success)
-                            results.Add(new TriggerMatchResult { Trigger = trigger, MatchedPortion = match.Value });
-                    }
-                    catch (ArgumentException)
-                    {
-                        // Invalid pattern — skip
+                        results.Add(new TriggerMatchResult { Trigger = trigger, MatchedPortion = match.Value });
+                        if (stopAfterFirst)
+                            return results;
                     }
                     break;
                 }
@@ -78,6 +108,8 @@ public static class TriggerMatcher
                          MeetsFastSimilarityThreshold(compactHaystack, compactNeedle, threshold)))
                     {
                         results.Add(new TriggerMatchResult { Trigger = trigger, MatchedPortion = trigger.Text });
+                        if (stopAfterFirst)
+                            return results;
                     }
                     break;
                 }
@@ -86,6 +118,21 @@ public static class TriggerMatcher
 
         return results;
     }
+
+    private static Regex? GetCachedRegex(string pattern) =>
+        RegexCache.GetOrAdd(pattern, static p =>
+        {
+            try
+            {
+                return new Regex(
+                    p,
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+            }
+            catch (ArgumentException)
+            {
+                return null;
+            }
+        });
 
     /// <summary>
     /// Collapse whitespace/underscores and strip zero-width junk OCR sometimes inserts.
@@ -96,7 +143,7 @@ public static class TriggerMatcher
             .Replace("\u200b", "")
             .Replace("\ufeff", "")
             .Replace("\u00a0", " ");
-        return Regex.Replace(cleaned, @"[\s_]+", " ").Trim();
+        return WhitespaceCollapse.Replace(cleaned, " ").Trim();
     }
 
     /// <summary>
@@ -141,12 +188,12 @@ public static class TriggerMatcher
             });
         }
 
-        return Regex.Replace(sb.ToString(), @"\s+", " ").Trim();
+        return SpaceCollapse.Replace(sb.ToString(), " ").Trim();
     }
 
     /// <summary>Letters/digits only after confusable folding — punctuation-agnostic compare.</summary>
     public static string CompactAlnum(string foldedText) =>
-        Regex.Replace(foldedText, @"[^0-9a-z]+", "", RegexOptions.IgnoreCase);
+        NonAlnum.Replace(foldedText, "");
 
     /// <summary>
     /// Fast-only: best sliding-window similarity vs threshold (percent). Needle length ≥ 6.
