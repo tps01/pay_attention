@@ -277,6 +277,10 @@ public sealed class CaptureMonitor : IDisposable
                     config = _config;
 
                 var captured = queued.ToCapturedFrame();
+                // Freeze rings at dequeue so long OCR cannot roll past the prompting scene.
+                var recordFramesAtDequeue = _ringBuffer.Snapshot();
+                var sequenceFramesAtDequeue = _sequenceRing.Snapshot();
+
                 // Live pending count: capture keeps enqueueing while OCR runs. A snapshot at
                 // start would miss backlog that arrives mid-cascade (stream shot→REC inject).
                 var ocr = await RecognizeFrameAsync(config, captured, token, () => queue.PendingCount)
@@ -292,7 +296,20 @@ public sealed class CaptureMonitor : IDisposable
                 {
                     var key = $"{match.Trigger.Id}:{match.MatchedPortion}";
                     if (_fireGate.ShouldFire(key, TimeSpan.FromSeconds(debounceSeconds), queued.Fingerprint))
-                        QueueCaptureWrite(config, captured, match, text);
+                    {
+                        _logger.Debug($"Trigger '{match.Trigger.Text}' accepted (matched '{match.MatchedPortion}').");
+                        QueueCaptureWrite(
+                            config,
+                            captured,
+                            match,
+                            text,
+                            recordFramesAtDequeue,
+                            sequenceFramesAtDequeue);
+                    }
+                    else
+                    {
+                        _logger.Debug($"Trigger '{match.Trigger.Text}' suppressed (debounce or unchanged scene).");
+                    }
                 }
 
                 // After a miss, resample static scenes. If we cut short and newer frames are
@@ -383,8 +400,14 @@ public sealed class CaptureMonitor : IDisposable
                     var monitorPending = parts.Count == 0 ? pendingBehind : static () => 0;
                     var monitorCascade = new CascadeContext(config, Stopwatch.StartNew(), monitorPending);
 
-                    using var slice = _grabber.CaptureMonitor(monitor.Index);
-                    var part = await RecognizeBitmapMultiPassAsync(slice.Bitmap, monitorCascade, token)
+                    // Crop from the queued virtual-desktop frame — never live re-grab, so
+                    // match text and the saved screenshot share the same frozen moment.
+                    using var slice = ImageHelpers.CropAbsoluteRegion(
+                        frame.Bitmap, frame.ScreenBounds, monitor.Bounds);
+                    if (slice is null)
+                        continue;
+
+                    var part = await RecognizeBitmapMultiPassAsync(slice, monitorCascade, token)
                         .ConfigureAwait(false);
                     parts.Add(part.Text);
                     cutShort |= part.CutShortForBacklog;
@@ -699,9 +722,17 @@ public sealed class CaptureMonitor : IDisposable
     /// <summary>
     /// Persist captures from the original color frame. OCR preprocessing never feeds this path.
     /// </summary>
-    private void QueueCaptureWrite(AppConfig config, CapturedFrame frame, TriggerMatchResult match, string ocrText)
+    private void QueueCaptureWrite(
+        AppConfig config,
+        CapturedFrame frame,
+        TriggerMatchResult match,
+        string ocrText,
+        IReadOnlyList<BufferedFrame>? recordFramesAtDequeue = null,
+        IReadOnlyList<BufferedFrame>? sequenceFramesAtDequeue = null)
     {
-        RaiseStatus("Saving", $"Saving '{match.Trigger.Text}'…");
+        var triggerText = match.Trigger.Text;
+        // StatusChanged logs this at Info and App shows an early tray balloon.
+        RaiseStatus("Processing", $"Potential trigger observed, processing… ('{triggerText}')");
 
         var snippet = ocrText.Length <= 280 ? ocrText : ocrText[..280];
         var sidecar = new CaptureSidecar
@@ -718,7 +749,6 @@ public sealed class CaptureMonitor : IDisposable
 
         var clone = (Bitmap)frame.Bitmap.Clone();
         var action = match.Trigger.Action;
-        var triggerText = match.Trigger.Text;
         var captureDirectory = config.CaptureDirectory;
         var saveJson = config.DebugSaveJsonSidecars;
         var screenshotFormat = config.ScreenshotFormat;
@@ -728,12 +758,15 @@ public sealed class CaptureMonitor : IDisposable
         var sequenceAfterSeconds = config.SequenceAfterSeconds;
         var sequenceIntervalSeconds = config.SequenceIntervalSeconds;
         var triggerTime = frame.Timestamp;
-        IReadOnlyList<BufferedFrame>? recordFrames = null;
-        IReadOnlyList<BufferedFrame>? sequenceFrames = null;
-        if (action == CaptureAction.Record)
-            recordFrames = _ringBuffer.Snapshot();
-        if (action == CaptureAction.Sequence)
-            sequenceFrames = _sequenceRing.Snapshot();
+        // Prefer rings frozen at OCR dequeue so a long cascade cannot roll past the scene.
+        IReadOnlyList<BufferedFrame>? recordFrames = action == CaptureAction.Record
+            ? recordFramesAtDequeue ?? _ringBuffer.Snapshot()
+            : null;
+        IReadOnlyList<BufferedFrame>? sequenceFrames = action == CaptureAction.Sequence
+            ? sequenceFramesAtDequeue ?? _sequenceRing.Snapshot()
+            : null;
+
+        RaiseStatus("Saving", $"Saving '{triggerText}'…");
 
         var cancelToken = _cts?.Token ?? CancellationToken.None;
 

@@ -4,6 +4,8 @@ using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
 using PayAttention.Capture;
 using PayAttention.Core.Models;
 using PayAttention.Core.Services;
@@ -40,6 +42,7 @@ public partial class SettingsWindow : Window
         CaptureScopeBox.ItemsSource = Enum.GetValues(typeof(CaptureScope));
         RecordFormatBox.ItemsSource = Enum.GetValues(typeof(RecordFormat));
         ScreenshotFormatBox.ItemsSource = Enum.GetValues(typeof(ScreenshotFormat));
+        LogLevelBox.ItemsSource = Enum.GetValues(typeof(LogLevel));
         ApplicationScopeBox.ItemsSource = new[]
         {
             new ScopeOption(ApplicationScopeMode.All, "All Applications"),
@@ -108,6 +111,7 @@ public partial class SettingsWindow : Window
         StartWithWindowsBox.IsChecked = config.StartWithWindows;
         StartMonitoringBox.IsChecked = config.StartMonitoringOnLaunch;
         DebugJsonBox.IsChecked = config.DebugSaveJsonSidecars;
+        LogLevelBox.SelectedItem = config.LogLevel;
         HotkeyBox.Text = config.PauseHotkey;
         RetentionDaysBox.Text = config.RetentionMaxAgeDays.ToString();
         RetentionFilesBox.Text = config.RetentionMaxFiles.ToString();
@@ -488,6 +492,7 @@ public partial class SettingsWindow : Window
             _configService.Save(imported);
             AutostartService.SetEnabled(imported.StartWithWindows, Environment.ProcessPath ?? string.Empty);
             _monitor.UpdateConfig(imported);
+            _logger.MinLevel = imported.LogLevel;
             ConfigSaved?.Invoke(this, imported);
             _logger.Info($"Config imported from {dialog.FileName}");
             MessageBox.Show(
@@ -515,6 +520,7 @@ public partial class SettingsWindow : Window
             ApplyConfigToUi(config);
             AutostartService.SetEnabled(config.StartWithWindows, Environment.ProcessPath ?? string.Empty);
             _monitor.UpdateConfig(config);
+            _logger.MinLevel = config.LogLevel;
             ConfigSaved?.Invoke(this, config);
             _logger.Info("Settings saved.");
             MessageBox.Show("Settings saved.", "pay_attention", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -636,6 +642,7 @@ public partial class SettingsWindow : Window
             StartWithWindows = StartWithWindowsBox.IsChecked == true,
             StartMonitoringOnLaunch = StartMonitoringBox.IsChecked == true,
             DebugSaveJsonSidecars = DebugJsonBox.IsChecked == true,
+            LogLevel = LogLevelBox.SelectedItem is LogLevel level ? level : LogLevel.Info,
             PauseHotkey = HotkeyBox.Text.Trim(),
             RetentionMaxAgeDays = retentionDays,
             RetentionMaxFiles = retentionFiles,
@@ -659,6 +666,51 @@ public partial class SettingsWindow : Window
     }
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
+
+    /// <summary>
+    /// DataGrid swallows mouse wheel even when it has nothing to scroll. Forward to the
+    /// outer settings ScrollViewer when the grid cannot (or should not) consume the delta.
+    /// </summary>
+    private void DataGrid_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (sender is not DataGrid grid)
+            return;
+
+        var gridScroll = FindDescendantScrollViewer(grid);
+        if (gridScroll is not null && CanScrollVertically(gridScroll, e.Delta))
+            return;
+
+        e.Handled = true;
+        var offset = SettingsScrollViewer.VerticalOffset - e.Delta;
+        SettingsScrollViewer.ScrollToVerticalOffset(offset);
+    }
+
+    private static bool CanScrollVertically(ScrollViewer scroll, int delta)
+    {
+        if (scroll.ScrollableHeight <= 0)
+            return false;
+
+        // Positive delta = scroll up (toward top); negative = scroll down.
+        if (delta > 0)
+            return scroll.VerticalOffset > 0;
+        return scroll.VerticalOffset < scroll.ScrollableHeight;
+    }
+
+    private static ScrollViewer? FindDescendantScrollViewer(DependencyObject root)
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is ScrollViewer sv)
+                return sv;
+            var nested = FindDescendantScrollViewer(child);
+            if (nested is not null)
+                return nested;
+        }
+
+        return null;
+    }
 
     private sealed class MonitorOption
     {

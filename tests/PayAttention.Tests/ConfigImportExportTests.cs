@@ -22,6 +22,7 @@ public sealed class ConfigImportExportTests
                 SequenceAfterSeconds = 45,
                 OcrIntervalMs = 500,
                 DebounceSeconds = 10,
+                LogLevel = LogLevel.Debug,
                 Triggers =
                 [
                     new TriggerConfig
@@ -53,6 +54,7 @@ public sealed class ConfigImportExportTests
             Assert.Equal(30, imported.SequenceBeforeSeconds);
             Assert.Equal(45, imported.SequenceAfterSeconds);
             Assert.Equal(500, imported.OcrIntervalMs);
+            Assert.Equal(LogLevel.Debug, imported.LogLevel);
             Assert.Equal(2, imported.Triggers.Count);
             Assert.Equal(CaptureAction.Sequence, imported.Triggers[0].Action);
             Assert.Equal("zX9mQ2kP", imported.Triggers[0].Text);

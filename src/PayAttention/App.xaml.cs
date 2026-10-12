@@ -46,6 +46,7 @@ public partial class App : Application
         _logger = new AppLogger(_configService.LogDirectory);
         var load = _configService.LoadDetailed();
         _config = load.Config;
+        _logger.MinLevel = _config.LogLevel;
 
         if (load.ResetToDefaults)
         {
@@ -69,6 +70,17 @@ public partial class App : Application
             Dispatcher.Invoke(UpdateTrayText);
             if (!string.IsNullOrWhiteSpace(args.Detail))
                 _logger.Info(args.Detail);
+
+            // Early feedback when a trigger is accepted but the capture write is still running.
+            if (string.Equals(args.Status, "Processing", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(args.Detail))
+            {
+                var detail = args.Detail!;
+                Dispatcher.Invoke(() =>
+                {
+                    _tray?.ShowBalloonTip(2000, "pay_attention", detail, ToolTipIcon.Info);
+                });
+            }
         };
         _monitor.TriggerFired += (_, args) =>
         {
@@ -114,6 +126,7 @@ public partial class App : Application
         menu.Items.Add(_startStopItem);
         menu.Items.Add(new ToolStripMenuItem("Settings...", null, (_, _) => OpenSettings()));
         menu.Items.Add(new ToolStripMenuItem("Open captures folder", null, (_, _) => OpenCaptures()));
+        menu.Items.Add(new ToolStripMenuItem("Open logs folder", null, (_, _) => OpenLogs()));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("About...", null, (_, _) => ShowAbout()));
         menu.Items.Add(new ToolStripMenuItem("Exit", null, (_, _) => ExitApp()));
@@ -207,6 +220,7 @@ public partial class App : Application
         _settingsWindow.ConfigSaved += (_, cfg) =>
         {
             _config = cfg;
+            _logger.MinLevel = cfg.LogLevel;
             RegisterHotkey(showErrors: true);
             UpdateTrayText();
         };
@@ -228,6 +242,24 @@ public partial class App : Application
         catch (Exception ex)
         {
             _logger.Error("Failed to open captures folder", ex);
+            MessageBox.Show(ex.Message, "pay_attention", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void OpenLogs()
+    {
+        try
+        {
+            Directory.CreateDirectory(_configService.LogDirectory);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = _configService.LogDirectory,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Failed to open logs folder", ex);
             MessageBox.Show(ex.Message, "pay_attention", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }

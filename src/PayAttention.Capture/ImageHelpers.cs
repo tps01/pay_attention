@@ -497,6 +497,34 @@ public static class ImageHelpers
         return result;
     }
 
+    /// <summary>
+    /// Crops <paramref name="absoluteRegion"/> out of a bitmap whose pixels cover
+    /// <paramref name="sourceScreenBounds"/> in screen coordinates. Returns null when
+    /// there is no overlap. Caller owns the result.
+    /// </summary>
+    public static Bitmap? CropAbsoluteRegion(Bitmap source, Rectangle sourceScreenBounds, Rectangle absoluteRegion)
+    {
+        if (source.Width < 1 || source.Height < 1)
+            return null;
+
+        var overlap = Rectangle.Intersect(absoluteRegion, sourceScreenBounds);
+        if (overlap.Width < 1 || overlap.Height < 1)
+            return null;
+
+        var local = new Rectangle(
+            overlap.X - sourceScreenBounds.X,
+            overlap.Y - sourceScreenBounds.Y,
+            overlap.Width,
+            overlap.Height);
+
+        // Clamp to bitmap pixels (virtual desktop grab can differ by a pixel at edges).
+        local.Intersect(new Rectangle(0, 0, source.Width, source.Height));
+        if (local.Width < 1 || local.Height < 1)
+            return null;
+
+        return source.Clone(local, source.PixelFormat);
+    }
+
     public static byte[] EncodeJpeg(Bitmap bitmap, long quality = 70L)
     {
         using var ms = new MemoryStream();
