@@ -33,6 +33,8 @@ Avoid common words like “Error” unless you want many captures of everyday wi
 
 ## Triggers
 
+The Triggers and Applications sections in Settings can be collapsed (click the section header) so long lists do not crowd the rest of the page. When expanded, each table scrolls inside a capped height.
+
 - **Text** — string to look for  
 - **Match** — `contains` (usual), `exact`, or `regex` (invalid regex blocks Save)  
 - **Action** — Screenshot, Record, or Sequence  

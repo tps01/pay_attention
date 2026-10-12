@@ -22,8 +22,9 @@
         <TextBlock Text="Capture screenshots, screenshot sequences, or short recordings when trigger text appears on screen."
                    TextWrapping="Wrap" Opacity="0.75" Margin="0,0,0,16" />
 
-        <GroupBox Header="Triggers" Padding="10" Margin="0,0,0,12">
-          <DockPanel>
+        <Expander Header="Triggers" IsExpanded="True" Margin="0,0,0,12" ExpandDirection="Down"
+                  Padding="0,6,0,0">
+          <DockPanel Margin="10,4,10,10">
             <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
               <Button Content="Add" Width="80" Margin="0,0,8,0" Click="AddTrigger_Click" />
               <Button Content="Remove" Width="80" Click="RemoveTrigger_Click" />
@@ -33,7 +34,9 @@
                       CanUserAddRows="False"
                       HeadersVisibility="Column"
                       SelectionMode="Single"
-                      MinHeight="160">
+                      MinHeight="160"
+                      MaxHeight="280"
+                      VerticalScrollBarVisibility="Auto">
               <DataGrid.Columns>
                 <DataGridTemplateColumn Header="On" Width="40">
                   <DataGridTemplateColumn.CellTemplate>
@@ -86,10 +89,11 @@
               </DataGrid.Columns>
             </DataGrid>
           </DockPanel>
-        </GroupBox>
+        </Expander>
 
-        <GroupBox Header="Applications" Padding="10" Margin="0,0,0,12">
-          <DockPanel>
+        <Expander Header="Applications" IsExpanded="True" Margin="0,0,0,12" ExpandDirection="Down"
+                  Padding="0,6,0,0">
+          <DockPanel Margin="10,4,10,10">
             <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
               <Button Content="Add" Width="80" Margin="0,0,8,0" Click="AddApplication_Click" />
               <Button Content="Remove" Width="80" Click="RemoveApplication_Click" />
@@ -99,7 +103,9 @@
                       CanUserAddRows="False"
                       HeadersVisibility="Column"
                       SelectionMode="Single"
-                      MinHeight="140">
+                      MinHeight="140"
+                      MaxHeight="240"
+                      VerticalScrollBarVisibility="Auto">
               <DataGrid.Columns>
                 <DataGridTemplateColumn Header="On" Width="40">
                   <DataGridTemplateColumn.CellTemplate>
@@ -148,7 +154,7 @@
               </DataGrid.Columns>
             </DataGrid>
           </DockPanel>
-        </GroupBox>
+        </Expander>
 
         <GroupBox Header="Capture" Padding="10" Margin="0,0,0,12">
           <Grid>
