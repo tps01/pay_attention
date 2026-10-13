@@ -5,6 +5,17 @@ using PayAttention.Core.Services;
 namespace PayAttention.Capture;
 
 /// <summary>
+/// Why <see cref="OcrFrameQueue.TryEnqueueIfChanged"/> accepted or rejected a frame.
+/// </summary>
+internal enum OcrEnqueueDecision
+{
+    Enqueued,
+    SkippedUnchanged,
+    EnqueuedForcedResample,
+    Dropped
+}
+
+/// <summary>
 /// Bounded queue of screen frames awaiting OCR. Capture enqueues clones; OCR worker drains.
 /// On overflow, oldest frames are disposed so the worker prefers fresher samples.
 /// </summary>
@@ -18,10 +29,17 @@ internal sealed class OcrFrameQueue : IDisposable
     /// </summary>
     public const int EnqueueMaxHammingDistance = 2;
 
+    /// <summary>
+    /// Re-OCR an unchanged scene after this long when enabled triggers remain unmatched
+    /// (avoids silencing sticky text forever after a partial hit).
+    /// </summary>
+    public const int StaticSceneResampleSeconds = 60;
+
     private readonly Channel<OcrQueuedFrame> _channel;
     private readonly object _fingerprintLock = new();
     private ulong? _lastEnqueuedFingerprint;
     private string? _lastEnqueuedForeground;
+    private DateTimeOffset? _forceResampleAfterUtc;
     private bool _disposed;
 
     public OcrFrameQueue(int capacity = DefaultCapacity)
@@ -39,26 +57,42 @@ internal sealed class OcrFrameQueue : IDisposable
 
     /// <summary>
     /// Enqueues a clone of <paramref name="frame"/> when the scene changed enough,
-    /// or when the foreground process changed (same pixels, different Selected triggers).
+    /// the foreground process changed, or a scheduled static resample is due.
     /// Returns false if skipped or the channel is completed.
     /// On overflow, oldest frames are dropped so the worker prefers fresher samples.
     /// </summary>
-    public bool TryEnqueueIfChanged(CapturedFrame frame, string? foregroundProcess)
+    public bool TryEnqueueIfChanged(CapturedFrame frame, string? foregroundProcess) =>
+        TryEnqueueIfChanged(frame, foregroundProcess, out _);
+
+    /// <inheritdoc cref="TryEnqueueIfChanged(CapturedFrame, string?)"/>
+    public bool TryEnqueueIfChanged(
+        CapturedFrame frame,
+        string? foregroundProcess,
+        out OcrEnqueueDecision decision)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         var fingerprint = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
         var fg = ApplicationScopeEvaluator.NormalizeProcessName(foregroundProcess);
+        var forcedResample = false;
         lock (_fingerprintLock)
         {
             var fgChanged = !string.Equals(_lastEnqueuedForeground, fg, StringComparison.OrdinalIgnoreCase);
             var sceneUnchanged = _lastEnqueuedFingerprint is ulong prev &&
                                  FrameFingerprint.IsSimilar(prev, fingerprint, EnqueueMaxHammingDistance);
-            if (sceneUnchanged && !fgChanged)
-                return false;
+            var forceDue = _forceResampleAfterUtc is DateTimeOffset deadline &&
+                           DateTimeOffset.UtcNow >= deadline;
 
+            if (sceneUnchanged && !fgChanged && !forceDue)
+            {
+                decision = OcrEnqueueDecision.SkippedUnchanged;
+                return false;
+            }
+
+            forcedResample = sceneUnchanged && !fgChanged && forceDue;
             _lastEnqueuedFingerprint = fingerprint;
             _lastEnqueuedForeground = fg;
+            _forceResampleAfterUtc = null;
         }
 
         var queued = new OcrQueuedFrame(
@@ -80,10 +114,27 @@ internal sealed class OcrFrameQueue : IDisposable
 
             // Completed or raced empty while "full" — drop this frame.
             queued.Dispose();
+            decision = OcrEnqueueDecision.Dropped;
             return false;
         }
 
+        decision = forcedResample
+            ? OcrEnqueueDecision.EnqueuedForcedResample
+            : OcrEnqueueDecision.Enqueued;
         return true;
+    }
+
+    /// <summary>
+    /// Hamming distance from the last enqueued fingerprint, or null when none yet.
+    /// </summary>
+    public int? HammingVsLastEnqueued(ulong fingerprint)
+    {
+        lock (_fingerprintLock)
+        {
+            return _lastEnqueuedFingerprint is ulong prev
+                ? FrameFingerprint.HammingDistance(prev, fingerprint)
+                : null;
+        }
     }
 
     /// <summary>Frames still waiting behind the one currently being OCR'd (best-effort).</summary>
@@ -128,6 +179,22 @@ internal sealed class OcrFrameQueue : IDisposable
         {
             _lastEnqueuedFingerprint = null;
             _lastEnqueuedForeground = null;
+            _forceResampleAfterUtc = null;
+        }
+    }
+
+    /// <summary>
+    /// After <paramref name="delay"/>, allow one enqueue of an unchanged scene.
+    /// Keeps the earliest pending deadline when called again.
+    /// </summary>
+    public void ScheduleResample(TimeSpan delay)
+    {
+        var due = DateTimeOffset.UtcNow + (delay < TimeSpan.Zero ? TimeSpan.Zero : delay);
+        lock (_fingerprintLock)
+        {
+            if (_forceResampleAfterUtc is DateTimeOffset existing && existing <= due)
+                return;
+            _forceResampleAfterUtc = due;
         }
     }
 

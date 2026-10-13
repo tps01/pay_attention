@@ -116,6 +116,7 @@ public partial class App : Application
             _config.RetentionMaxAgeDays,
             _config.RetentionMaxFiles,
             _logger);
+        _logger.EnforceRetention();
     }
 
     private void BuildTray()
