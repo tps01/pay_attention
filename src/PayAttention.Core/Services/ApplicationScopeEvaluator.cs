@@ -138,9 +138,10 @@ public static class ApplicationScopeEvaluator
     {
         return config.ApplicationScope switch
         {
+            // Only the foreground whitelist app's Selected/All/None filter applies.
+            // Do not fall back to the first whitelist row — that blocks other listed apps.
             ApplicationScopeMode.Whitelisted =>
-                FindMatchingRow(config, foregroundProcessName, ApplicationListMode.Whitelist)
-                ?? FirstEnabledWhitelistRow(config),
+                FindMatchingRow(config, foregroundProcessName, ApplicationListMode.Whitelist),
             ApplicationScopeMode.AllMinusBlacklisted =>
                 FindMatchingRow(config, foregroundProcessName, ApplicationListMode.Blacklist)
                 ?? FindMatchingRow(config, foregroundProcessName, ApplicationListMode.Whitelist),
@@ -148,17 +149,17 @@ public static class ApplicationScopeEvaluator
         };
     }
 
-    private static ApplicationConfig? FirstEnabledWhitelistRow(AppConfig config) =>
-        (config.Applications ?? []).FirstOrDefault(a =>
-            a.Enabled &&
-            a.ListMode == ApplicationListMode.Whitelist &&
-            !string.IsNullOrWhiteSpace(a.ProcessName));
-
     public static bool IsTriggerAllowed(AppConfig config, string? foregroundProcessName, Guid triggerId)
     {
         var row = FindRelevantRow(config, foregroundProcessName);
         if (row is null)
+        {
+            // Whitelist capture without a matching FG app: do not fire Selected/All rows
+            // belonging to another listed process.
+            if (config.ApplicationScope == ApplicationScopeMode.Whitelisted)
+                return false;
             return true;
+        }
 
         return ResolveTriggerFilter(row) switch
         {

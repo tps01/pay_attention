@@ -74,15 +74,15 @@
                   <DataGridTemplateColumn.HeaderStyle>
                     <Style TargetType="DataGridColumnHeader">
                       <Setter Property="ToolTip"
-                              Value="Thorough (default): full OCR passes for hard-to-read text. Fast: prefer fresh samples for briefly visible lines (fast scroll / flash)." />
+                              Value="Fast (default): prefer fresh samples for briefly visible lines. Thorough: full OCR passes for hard-to-read static text." />
                     </Style>
                   </DataGridTemplateColumn.HeaderStyle>
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate>
                       <ComboBox SelectedItem="{Binding OcrMode, UpdateSourceTrigger=PropertyChanged}"
-                                ToolTip="Thorough (default): full OCR passes for hard-to-read text. Fast: prefer fresh samples for briefly visible lines (fast scroll / flash).">
-                        <models:OcrSpeedMode>Thorough</models:OcrSpeedMode>
+                                ToolTip="Fast (default): prefer fresh samples for briefly visible lines. Thorough: full OCR passes for hard-to-read static text.">
                         <models:OcrSpeedMode>Fast</models:OcrSpeedMode>
+                        <models:OcrSpeedMode>Thorough</models:OcrSpeedMode>
                       </ComboBox>
                     </DataTemplate>
                   </DataGridTemplateColumn.CellTemplate>

@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Threading.Channels;
+using PayAttention.Core.Services;
 
 namespace PayAttention.Capture;
 
@@ -20,6 +21,7 @@ internal sealed class OcrFrameQueue : IDisposable
     private readonly Channel<OcrQueuedFrame> _channel;
     private readonly object _fingerprintLock = new();
     private ulong? _lastEnqueuedFingerprint;
+    private string? _lastEnqueuedForeground;
     private bool _disposed;
 
     public OcrFrameQueue(int capacity = DefaultCapacity)
@@ -36,8 +38,9 @@ internal sealed class OcrFrameQueue : IDisposable
     }
 
     /// <summary>
-    /// Enqueues a clone of <paramref name="frame"/> when the scene changed enough.
-    /// Returns false if skipped (similar fingerprint) or the channel is completed.
+    /// Enqueues a clone of <paramref name="frame"/> when the scene changed enough,
+    /// or when the foreground process changed (same pixels, different Selected triggers).
+    /// Returns false if skipped or the channel is completed.
     /// On overflow, oldest frames are dropped so the worker prefers fresher samples.
     /// </summary>
     public bool TryEnqueueIfChanged(CapturedFrame frame, string? foregroundProcess)
@@ -45,12 +48,17 @@ internal sealed class OcrFrameQueue : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         var fingerprint = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
+        var fg = ApplicationScopeEvaluator.NormalizeProcessName(foregroundProcess);
         lock (_fingerprintLock)
         {
-            if (_lastEnqueuedFingerprint is ulong prev &&
-                FrameFingerprint.IsSimilar(prev, fingerprint, EnqueueMaxHammingDistance))
+            var fgChanged = !string.Equals(_lastEnqueuedForeground, fg, StringComparison.OrdinalIgnoreCase);
+            var sceneUnchanged = _lastEnqueuedFingerprint is ulong prev &&
+                                 FrameFingerprint.IsSimilar(prev, fingerprint, EnqueueMaxHammingDistance);
+            if (sceneUnchanged && !fgChanged)
                 return false;
+
             _lastEnqueuedFingerprint = fingerprint;
+            _lastEnqueuedForeground = fg;
         }
 
         var queued = new OcrQueuedFrame(
@@ -111,13 +119,16 @@ internal sealed class OcrFrameQueue : IDisposable
     }
 
     /// <summary>
-    /// Clear the enqueue fingerprint so the next grab is sampled even if the screen
-    /// looks unchanged (needed after a Thorough miss on a static fixture).
+    /// Clear the enqueue fingerprint / FG so the next grab is sampled even if the
+    /// screen looks unchanged (needed after a Thorough miss on a static fixture).
     /// </summary>
     public void AllowResample()
     {
         lock (_fingerprintLock)
+        {
             _lastEnqueuedFingerprint = null;
+            _lastEnqueuedForeground = null;
+        }
     }
 
     public void Complete() => _channel.Writer.TryComplete();

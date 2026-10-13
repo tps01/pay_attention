@@ -108,6 +108,59 @@ public sealed class ScreenGrabber
         }
     }
 
+    /// <summary>
+    /// Marks this process as having recent input so a subsequent SetForegroundWindow
+    /// (often from the same process, e.g. a harness timer) can succeed under focus lock.
+    /// </summary>
+    public void PulseForegroundPermission()
+    {
+        const byte vkMenu = 0x12;
+        const uint keyeventfKeyup = 0x0002;
+        NativeMethods.keybd_event(vkMenu, 0, 0, UIntPtr.Zero);
+        NativeMethods.keybd_event(vkMenu, 0, keyeventfKeyup, UIntPtr.Zero);
+    }
+
+    /// <summary>
+    /// Top-most visible window (Z-order) whose process is in <paramref name="processNames"/>.
+    /// Used when OS FG is outside the whitelist but Activate/raise changed Z-order among listed apps.
+    /// </summary>
+    public string? GetTopmostProcessAmong(IEnumerable<string> processNames)
+    {
+        var targets = processNames
+            .Select(ApplicationScopeEvaluator.NormalizeProcessName)
+            .Where(n => n.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (targets.Count == 0)
+            return null;
+
+        string? found = null;
+        NativeMethods.EnumWindows((hwnd, _) =>
+        {
+            if (!NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd))
+                return true;
+            NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+            if (pid == 0)
+                return true;
+            try
+            {
+                using var process = Process.GetProcessById(unchecked((int)pid));
+                var name = ApplicationScopeEvaluator.NormalizeProcessName(process.ProcessName);
+                if (!targets.Contains(name))
+                    return true;
+                if (!TryGetVisibleWindowBounds(hwnd, out var bounds) ||
+                    bounds.Width < 8 || bounds.Height < 8)
+                    return true;
+                found = name;
+                return false; // EnumWindows is top-to-bottom
+            }
+            catch
+            {
+                return true;
+            }
+        }, IntPtr.Zero);
+        return found;
+    }
+
     public IReadOnlyList<string> GetRunningProcessNames()
     {
         return Process.GetProcesses()
@@ -205,6 +258,61 @@ public sealed class ScreenGrabber
 
         return painted;
     }
+
+    /// <summary>
+    /// Visible top-level windows (Z-order top→bottom) for processes not in
+    /// <paramref name="excludeProcessNames"/> (e.g. blacklist masks).
+    /// </summary>
+    public IReadOnlyList<(IntPtr Hwnd, Rectangle Bounds)> GetVisibleProcessWindows(
+        IEnumerable<string>? excludeProcessNames)
+    {
+        var exclude = (excludeProcessNames ?? [])
+            .Select(ApplicationScopeEvaluator.NormalizeProcessName)
+            .Where(n => n.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var seen = new HashSet<IntPtr>();
+        var windows = new List<(IntPtr, Rectangle)>();
+        NativeMethods.EnumWindows((hwnd, _) =>
+        {
+            if (hwnd == IntPtr.Zero || !seen.Add(hwnd))
+                return true;
+            if (!NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd))
+                return true;
+            if (!TryGetVisibleWindowBounds(hwnd, out var windowBounds))
+                return true;
+            if (windowBounds.Width < 8 || windowBounds.Height < 8)
+                return true;
+
+            NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+            if (pid == 0)
+                return true;
+
+            try
+            {
+                using var process = Process.GetProcessById(unchecked((int)pid));
+                var name = ApplicationScopeEvaluator.NormalizeProcessName(process.ProcessName);
+                if (exclude.Contains(name))
+                    return true;
+                windows.Add((hwnd, windowBounds));
+            }
+            catch
+            {
+                // ignore inaccessible processes
+            }
+
+            return true;
+        }, IntPtr.Zero);
+
+        return windows;
+    }
+
+    /// <summary>
+    /// Visible top-level window bounds in virtual-screen coordinates for processes
+    /// that are not in <paramref name="excludeProcessNames"/> (e.g. blacklist masks).
+    /// </summary>
+    public IReadOnlyList<Rectangle> GetVisibleProcessWindowBounds(IEnumerable<string>? excludeProcessNames) =>
+        GetVisibleProcessWindows(excludeProcessNames).Select(w => w.Bounds).ToList();
 
     /// <summary>
     /// Captures a specific window by HWND via PrintWindow (correct under DPI;
@@ -508,6 +616,9 @@ public sealed class ScreenGrabber
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);
+
+        [DllImport("user32.dll")]
+        public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 
         public const int PwRenderFullContent = 2;
         public const uint RdwInvalidate = 0x0001;

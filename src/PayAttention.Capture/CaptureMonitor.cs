@@ -45,6 +45,10 @@ public sealed class CaptureMonitor : IDisposable
     private OcrFrameQueue? _ocrQueue;
     private bool _paused;
     private bool _disposed;
+    /// <summary>Last whitelist process that held OS focus (survives focus-lock steals).</summary>
+    private string? _stickyWhitelistForeground;
+    private DateTimeOffset _lastForegroundPulseUtc = DateTimeOffset.MinValue;
+    private SynchronizationContext? _uiContext;
 
     public CaptureMonitor(AppConfig config, AppLogger logger)
     {
@@ -97,6 +101,8 @@ public sealed class CaptureMonitor : IDisposable
         }
 
         _paused = false;
+        _uiContext = SynchronizationContext.Current;
+        _stickyWhitelistForeground = null;
         _cts = new CancellationTokenSource();
         _ocrQueue = new OcrFrameQueue();
         _loopTask = Task.Run(() => RunPipelineAsync(_cts.Token));
@@ -185,6 +191,9 @@ public sealed class CaptureMonitor : IDisposable
 
                 // Whitelist-only: tell the skip gate which listed processes are alive (cheap
                 // GetProcessesByName). All / AllMinusBlacklisted ignore this snapshot.
+                // Selected follows the real FG when it is listed; otherwise the sticky last
+                // listed FG (focus-lock often steals back to the browser). A rare Alt pulse
+                // lets same-process Activate (e.g. harness) take FG while sticky is empty.
                 IEnumerable<string>? runningWhitelist = null;
                 if (config.ApplicationScope == ApplicationScopeMode.Whitelisted)
                 {
@@ -192,6 +201,8 @@ public sealed class CaptureMonitor : IDisposable
                     runningWhitelist = whitelist.Count > 0 && _grabber.AnyNamedProcessRunning(whitelist)
                         ? whitelist
                         : Array.Empty<string>();
+                    if (whitelist.Count > 0)
+                        foregroundProcess = ResolveWhitelistForeground(whitelist, foregroundProcess);
                 }
 
                 if (ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, foregroundProcess, runningWhitelist))
@@ -334,10 +345,19 @@ public sealed class CaptureMonitor : IDisposable
 
                 // Total miss, or a search cut short with an idle queue: sample the static scene
                 // again. A finished search that already matched stays quiet so absent triggers
-                // in a long list do not re-OCR forever.
+                // in a long list do not re-OCR forever (whitelist / many-trigger case).
+                // Whitelist Selected: only count triggers allowed for this FG — OCR may see
+                // another listed app's phrase without being allowed to fire it.
+                // AllMinusBlacklisted: one pane's hit must not silence OCR while other panes'
+                // triggers are still missing (multi-pane Alpha then Beta).
+                var allMatched = AllAllowedMatched(text, config, foregroundProcess);
+                var anyMatched = AnyAllowedMatched(text, config, foregroundProcess);
+                var anyForQuiet = config.ApplicationScope == ApplicationScopeMode.AllMinusBlacklisted
+                    ? allMatched
+                    : anyMatched;
                 if (OcrCascadePolicy.ShouldResample(
-                        AllEnabledMatched(text, config),
-                        OcrCascadePolicy.AnyEnabledMatched(text, config),
+                        allMatched,
+                        anyForQuiet,
                         ocr.CutShortForBacklog,
                         queue.PendingCount))
                     queue.AllowResample();
@@ -363,6 +383,83 @@ public sealed class CaptureMonitor : IDisposable
         var remaining = interval - cycle.Elapsed;
         if (remaining > TimeSpan.Zero)
             await Task.Delay(remaining, token).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Prefer OS FG when it is a listed app (updates sticky). Otherwise keep sticky so
+    /// Selected does not flip when the browser steals focus. Pulse input so same-process
+    /// Activate (e.g. harness) can reclaim FG; re-read after the pulse.
+    /// </summary>
+    private string? ResolveWhitelistForeground(IReadOnlyList<string> whitelist, string? osForeground)
+    {
+        var fgNorm = ApplicationScopeEvaluator.NormalizeProcessName(osForeground);
+        if (fgNorm.Length > 0 &&
+            whitelist.Any(n => string.Equals(n, fgNorm, StringComparison.OrdinalIgnoreCase)))
+        {
+            _stickyWhitelistForeground = fgNorm;
+            return fgNorm;
+        }
+
+        // Help same-process Activate take FG (focus lock). Pulse on the UI thread when
+        // available so WinForms timers in the same process can SetForegroundWindow.
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastForegroundPulseUtc > TimeSpan.FromMilliseconds(500))
+        {
+            _lastForegroundPulseUtc = now;
+            PulseForegroundPermissionOnUiThread();
+            fgNorm = ApplicationScopeEvaluator.NormalizeProcessName(_grabber.GetForegroundProcessName());
+            if (fgNorm.Length > 0 &&
+                whitelist.Any(n => string.Equals(n, fgNorm, StringComparison.OrdinalIgnoreCase)))
+            {
+                _stickyWhitelistForeground = fgNorm;
+                return fgNorm;
+            }
+        }
+
+        // Activate often raises Z-order among listed TopMost panes without winning OS FG
+        // (browser focus lock). Follow the top-most listed window so Selected can switch
+        // Alpha → Beta after the harness raises the next pane.
+        var topListed = _grabber.GetTopmostProcessAmong(whitelist);
+        if (!string.IsNullOrEmpty(topListed))
+        {
+            _stickyWhitelistForeground = topListed;
+            return topListed;
+        }
+
+        if (!string.IsNullOrEmpty(_stickyWhitelistForeground) &&
+            whitelist.Any(n => string.Equals(n, _stickyWhitelistForeground, StringComparison.OrdinalIgnoreCase)) &&
+            _grabber.AnyNamedProcessRunning([_stickyWhitelistForeground]))
+            return _stickyWhitelistForeground;
+
+        // Single listed app that is alive: Selected applies to that app even when OS FG
+        // is elsewhere (typical for "only this process" / self-whitelist harnesses).
+        var runningListed = whitelist.Where(n => _grabber.AnyNamedProcessRunning([n])).ToList();
+        if (runningListed.Count == 1)
+        {
+            _stickyWhitelistForeground = runningListed[0];
+            return runningListed[0];
+        }
+
+        // Outside the list and no sticky yet: deny Selected (caller keeps os FG name).
+        return osForeground;
+    }
+
+    private void PulseForegroundPermissionOnUiThread()
+    {
+        if (_uiContext is null)
+        {
+            _grabber.PulseForegroundPermission();
+            return;
+        }
+
+        try
+        {
+            _uiContext.Send(_ => _grabber.PulseForegroundPermission(), null);
+        }
+        catch
+        {
+            _grabber.PulseForegroundPermission();
+        }
     }
 
     private CapturedFrame? Grab(AppConfig config)
@@ -403,6 +500,17 @@ public sealed class CaptureMonitor : IDisposable
         pendingBehind ??= static () => 0;
         var cascadeClock = Stopwatch.StartNew();
         var cascade = new CascadeContext(config, cascadeClock, pendingBehind);
+
+        // AllMinusBlacklisted: OCR each non-masked visible window crop so side-by-side
+        // panes (e.g. Alpha + Beta) are recoverable; keep the full masked frame for save.
+        if (config.ApplicationScope == ApplicationScopeMode.AllMinusBlacklisted &&
+            config.CaptureScope == CaptureScope.Monitor)
+        {
+            var windowResult = await RecognizeNonBlacklistedWindowsAsync(
+                config, frame, pendingBehind, token, onText).ConfigureAwait(false);
+            if (windowResult is not null)
+                return windowResult.Value;
+        }
 
         if (config.CaptureScope == CaptureScope.Monitor &&
             config.MonitorSelection == MonitorSelection.All)
@@ -446,6 +554,81 @@ public sealed class CaptureMonitor : IDisposable
         }
 
         return await RecognizeBitmapMultiPassAsync(frame.Bitmap, cascade, token, onText).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Per-window OCR for AllMinusBlacklisted monitor captures. Returns null when no
+    /// overlapping non-blacklisted windows were found (caller falls back to full-frame OCR).
+    /// </summary>
+    private async Task<OcrFrameResult?> RecognizeNonBlacklistedWindowsAsync(
+        AppConfig config,
+        CapturedFrame frame,
+        Func<int> pendingBehind,
+        CancellationToken token,
+        Action<string>? onText)
+    {
+        var exclude = ApplicationScopeEvaluator.GetBlacklistProcessNamesToMask(config);
+        var windows = _grabber.GetVisibleProcessWindows(exclude);
+        if (windows.Count == 0)
+            return null;
+
+        var frameArea = frame.ScreenBounds.Width * (long)frame.ScreenBounds.Height;
+        // Preserve EnumWindows Z-order (top → bottom). TopMost fixture panes sort above
+        // ordinary browser windows; do not re-rank by area (that OCR'd huge Chrome first).
+        var targets = new List<(IntPtr Hwnd, Rectangle Bounds)>();
+        foreach (var (hwnd, windowBounds) in windows)
+        {
+            var overlap = Rectangle.Intersect(windowBounds, frame.ScreenBounds);
+            if (overlap.Width < 32 || overlap.Height < 32)
+                continue;
+            var area = overlap.Width * (long)overlap.Height;
+            // Skip near-fullscreen hosts and tiny tool windows.
+            if (frameArea > 0 && (area >= frameArea * 3 / 4 || area < frameArea / 200))
+                continue;
+            targets.Add((hwnd, overlap));
+            if (targets.Count >= 12)
+                break;
+        }
+
+        if (targets.Count == 0)
+            return null;
+
+        var parts = new List<string>(targets.Count);
+        var cutShort = false;
+        for (var i = 0; i < targets.Count; i++)
+        {
+            var soFar = string.Join("\n", parts);
+            if (AllEnabledMatched(soFar, config))
+                break;
+
+            var windowPending = i == 0 ? pendingBehind : static () => 0;
+            var windowCascade = new CascadeContext(config, Stopwatch.StartNew(), windowPending);
+
+            // PrintWindow each HWND for OCR: CopyFromScreen crops often miss TextBox
+            // scroll paints that PrintWindow still recovers (same as whitelist path).
+            // Screenshot save stays the masked monitor frame from the queue.
+            using var live = _grabber.TryCaptureWindow(targets[i].Hwnd);
+            using var cropped = live is null
+                ? ImageHelpers.CropAbsoluteRegion(
+                    frame.Bitmap, frame.ScreenBounds, targets[i].Bounds)
+                : null;
+            var slice = live?.Bitmap ?? cropped;
+            if (slice is null)
+                continue;
+
+            var part = await RecognizeBitmapMultiPassAsync(slice, windowCascade, token, onText)
+                .ConfigureAwait(false);
+            parts.Add(part.Text);
+            cutShort |= part.CutShortForBacklog;
+
+            var joined = string.Join("\n", parts);
+            if (AllEnabledMatched(joined, config))
+                return new OcrFrameResult(joined, CutShortForBacklog: false);
+        }
+
+        return parts.Count == 0
+            ? null
+            : new OcrFrameResult(string.Join("\n", parts), cutShort);
     }
 
     private async Task<OcrFrameResult> RecognizeBitmapMultiPassAsync(
@@ -541,6 +724,38 @@ public sealed class CaptureMonitor : IDisposable
 
     private static bool AllEnabledMatched(string text, AppConfig config, int fastMatchThresholdPercent) =>
         OcrCascadePolicy.AllEnabledMatched(text, config, fastMatchThresholdPercent);
+
+    /// <summary>
+    /// Like AllEnabledMatched, but only triggers allowed for the current foreground row.
+    /// Empty allowed set (whitelist FG outside list) counts as complete so we stay quiet.
+    /// </summary>
+    private static bool AllAllowedMatched(string text, AppConfig config, string? foregroundProcess)
+    {
+        var allowed = EnabledTriggers(config)
+            .Where(t => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, t.Id))
+            .ToList();
+        if (allowed.Count == 0)
+            return true;
+
+        var matchedIds = TriggerMatcher.FindMatches(text, config.Triggers, config.FastMatchThresholdPercent)
+            .Select(m => m.Trigger.Id)
+            .ToHashSet();
+        return allowed.All(t => matchedIds.Contains(t.Id));
+    }
+
+    private static bool AnyAllowedMatched(string text, AppConfig config, string? foregroundProcess)
+    {
+        var allowed = EnabledTriggers(config)
+            .Where(t => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, t.Id))
+            .ToList();
+        if (allowed.Count == 0)
+            return true;
+
+        var matchedIds = TriggerMatcher.FindMatches(text, config.Triggers, config.FastMatchThresholdPercent)
+            .Select(m => m.Trigger.Id)
+            .ToHashSet();
+        return allowed.Any(t => matchedIds.Contains(t.Id));
+    }
 
     /// <summary>
     /// When newer frames are already queued, cut the cascade short so OCR can catch up

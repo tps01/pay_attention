@@ -1,4 +1,5 @@
-﻿using System.Drawing;
+﻿using System.Diagnostics;
+using System.Drawing;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -10,8 +11,9 @@ namespace PayAttention.Harness;
 
 /// <summary>
 /// On-screen OCR harness.
-/// Modes: hard (static fixture) | stream (inject lines + latency) | dmesg (fast colored MCE dump).
-/// Requires both a screenshot and a recording capture to pass.
+/// Modes: hard | stream | stream-long | dmesg | dmesg-long | many | scope-white |
+/// scope-black | pairwise N | fixture (child window only).
+/// Pairwise covers difficulty × scroll × speed × multi-pane × OCR × scope (8 cases).
 /// </summary>
 internal static class Program
 {
@@ -20,6 +22,8 @@ internal static class Program
     // (probe: zX9!mQ2@kP is unreadable; zX9mQ2kP matches via confusable/fuzzy).
     private const string ShotTrigger = "zX9mQ2kP";
     private const string RecTrigger = "err#42v2";
+    /// <summary>OCR-friendly REC token for easy pairwise fixtures (Fast OCR drops # in err#42v2).</summary>
+    private const string EasyRecTrigger = "zRecOK42";
     private const string WeirdSentence = "Il0O|B8S5 fail-NOW: retry?";
     private const string RandomToken = "qW3$pL9&nX";
     // Extra OCR junk (not triggers) — must not Contains-match ShotTrigger / RecTrigger.
@@ -32,6 +36,13 @@ internal static class Program
     // Punctuation in RIP !INEXACT! is folded away by TriggerMatcher (OCR often drops !).
     private const string DmesgTrigger = "RIP !INEXACT!";
 
+    private const string ScopeAlphaTrigger = "kA7nP3qW";
+    private const string ScopeBetaTrigger = "mR4tL8vC";
+    private const string ScopeDecoyTrigger = "bZ2wH6yD";
+    private const string ScopeAlphaExe = "PaWhiteAlpha.exe";
+    private const string ScopeBetaExe = "PaWhiteBeta.exe";
+    private const string ScopeDecoyExe = "PaScopeDecoy.exe";
+
     // MobaXterm-like: white body, red keyword highlights. Owner-drawn for PrintWindow.
     private static readonly Color DmesgFg = Color.FromArgb(235, 235, 235);
     private static readonly Color DmesgRed = Color.FromArgb(255, 70, 70);
@@ -43,43 +54,246 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
-        ParseArgs(args, out var mode, out var timeoutSec);
+        ParseArgs(args, out var mode, out var timeoutSec, out var manySlot, out var pairwiseId, out var fixtureOpts);
         return mode switch
         {
-            "stream" => RunStreamMode(timeoutSec),
-            "dmesg" => RunDmesgMode(timeoutSec),
+            "stream" => RunStreamMode(timeoutSec, noiseBeforeShot: 5, noiseBeforeRec: 5),
+            "stream-long" => RunStreamMode(timeoutSec, noiseBeforeShot: 40, noiseBeforeRec: 40),
+            "dmesg" => RunDmesgMode(timeoutSec, longForm: false),
+            "dmesg-long" => RunDmesgMode(timeoutSec, longForm: true),
+            "many" => RunManyMode(timeoutSec, manySlot),
+            "scope-white" => RunScopeMode(timeoutSec, whitelist: true),
+            "scope-black" => RunScopeMode(timeoutSec, whitelist: false),
+            "pairwise" => RunPairwise(pairwiseId, timeoutSec),
+            "fixture" => RunFixtureMode(fixtureOpts),
             _ => RunHardMode(timeoutSec)
         };
     }
 
     /// <summary>
-    /// Args: [hard|stream|dmesg] [timeoutSec]
+    /// Args:
+    ///   [hard|stream|stream-long|dmesg|dmesg-long|scope-white|scope-black] [timeoutSec]
+    ///   pairwise N [timeoutSec]   (N = 1..8)
+    ///   many [first|mid|last] [timeoutSec]
+    ///   fixture --phrase TEXT --title TITLE --x N --y N --w N --h N [--easy] [--scroll MS]
     /// Legacy: [timeoutSec] → hard mode (keeps existing pytest invocation).
     /// </summary>
-    private static void ParseArgs(string[] args, out string mode, out int timeoutSec)
+    private static void ParseArgs(
+        string[] args,
+        out string mode,
+        out int timeoutSec,
+        out string manySlot,
+        out int pairwiseId,
+        out FixtureOptions fixtureOpts)
     {
         mode = "hard";
         timeoutSec = 90;
+        manySlot = "first";
+        pairwiseId = 1;
+        fixtureOpts = new FixtureOptions(
+            Phrase: ScopeAlphaTrigger,
+            Title: "fixture",
+            Bounds: new Rectangle(40, 40, 360, 280),
+            Easy: false,
+            ScrollMs: 0);
 
         if (args.Length == 0)
             return;
 
-        if (string.Equals(args[0], "hard", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(args[0], "stream", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(args[0], "dmesg", StringComparison.OrdinalIgnoreCase))
+        if (int.TryParse(args[0], out var legacyTimeout))
         {
-            mode = args[0].ToLowerInvariant();
-            timeoutSec = mode is "stream" or "dmesg" ? 120 : 90;
-            if (args.Length > 1 && int.TryParse(args[1], out var t))
-                timeoutSec = t;
+            timeoutSec = legacyTimeout;
             return;
         }
 
-        if (int.TryParse(args[0], out var legacyTimeout))
-            timeoutSec = legacyTimeout;
+        mode = args[0].ToLowerInvariant();
+        timeoutSec = mode switch
+        {
+            "stream" or "dmesg" => 120,
+            "stream-long" or "dmesg-long" or "scope-white" or "scope-black" => 180,
+            "pairwise" => 30,
+            "many" => 90,
+            _ => 90
+        };
+
+        if (mode == "many")
+        {
+            if (args.Length > 1 &&
+                (string.Equals(args[1], "first", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(args[1], "mid", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(args[1], "last", StringComparison.OrdinalIgnoreCase)))
+            {
+                manySlot = args[1].ToLowerInvariant();
+                if (args.Length > 2 && int.TryParse(args[2], out var manyTimeout))
+                    timeoutSec = manyTimeout;
+            }
+            else if (args.Length > 1 && int.TryParse(args[1], out var manyTimeoutOnly))
+            {
+                timeoutSec = manyTimeoutOnly;
+            }
+
+            return;
+        }
+
+        if (mode == "pairwise")
+        {
+            if (args.Length < 2 || !int.TryParse(args[1], out pairwiseId) || pairwiseId is < 1 or > 8)
+            {
+                Console.Error.WriteLine("FAIL: usage: pairwise <1..8> [timeoutSec]");
+                pairwiseId = 0;
+            }
+
+            if (args.Length > 2 && int.TryParse(args[2], out var pairTimeout))
+                timeoutSec = pairTimeout;
+            return;
+        }
+
+        if (mode == "fixture")
+        {
+            fixtureOpts = ParseFixtureOptions(args.AsSpan(1));
+            return;
+        }
+
+        if (args.Length > 1 && int.TryParse(args[1], out var t))
+            timeoutSec = t;
     }
 
-    private static int RunHardMode(int timeoutSec)
+    /// <summary>
+    /// Pairwise covering array (strength 2) over:
+    /// Difficulty × Scrolling × TextSpeed × MultiPane × OcrMode × AppScope.
+    /// </summary>
+    private static readonly HarnessOpts[] PairwiseCases =
+    [
+        // 1 easy, static, slow*, single, Fast, whitelist
+        new(Easy: true, Scrolling: false, FastScroll: false, MultiPane: false, OcrMode: OcrSpeedMode.Fast, WhitelistScope: true),
+        // 2 easy, scroll, fast, multi, Thorough, blacklist
+        new(Easy: true, Scrolling: true, FastScroll: true, MultiPane: true, OcrMode: OcrSpeedMode.Thorough, WhitelistScope: false),
+        // 3 hard, static, fast*, multi, Fast, blacklist
+        new(Easy: false, Scrolling: false, FastScroll: true, MultiPane: true, OcrMode: OcrSpeedMode.Fast, WhitelistScope: false),
+        // 4 hard, scroll, slow, single, Thorough, whitelist
+        new(Easy: false, Scrolling: true, FastScroll: false, MultiPane: false, OcrMode: OcrSpeedMode.Thorough, WhitelistScope: true),
+        // 5 easy, static, fast*, multi, Thorough, whitelist
+        new(Easy: true, Scrolling: false, FastScroll: true, MultiPane: true, OcrMode: OcrSpeedMode.Thorough, WhitelistScope: true),
+        // 6 easy, scroll, slow, single, Fast, blacklist
+        new(Easy: true, Scrolling: true, FastScroll: false, MultiPane: false, OcrMode: OcrSpeedMode.Fast, WhitelistScope: false),
+        // 7 hard, static, slow*, single, Thorough, blacklist
+        new(Easy: false, Scrolling: false, FastScroll: false, MultiPane: false, OcrMode: OcrSpeedMode.Thorough, WhitelistScope: false),
+        // 8 hard, scroll, fast, multi, Fast, whitelist
+        new(Easy: false, Scrolling: true, FastScroll: true, MultiPane: true, OcrMode: OcrSpeedMode.Fast, WhitelistScope: true),
+    ];
+
+    private static int RunPairwise(int id, int timeoutSec)
+    {
+        if (id < 1 || id > PairwiseCases.Length)
+        {
+            Console.Error.WriteLine($"FAIL: pairwise id must be 1..{PairwiseCases.Length}, got {id}");
+            return 2;
+        }
+
+        var opts = PairwiseCases[id - 1];
+        Console.WriteLine($"Mode: pairwise");
+        Console.WriteLine($"Pairwise: case={id}/{PairwiseCases.Length}");
+        Console.WriteLine(
+            $"Factors: difficulty={(opts.Easy ? "easy" : "hard")} scrolling={(opts.Scrolling ? "yes" : "no")} " +
+            $"speed={(opts.Scrolling ? (opts.FastScroll ? "fast" : "slow") : "n/a")} " +
+            $"multi={(opts.MultiPane ? "yes" : "no")} ocr={opts.OcrMode} " +
+            $"scope={(opts.WhitelistScope ? "whitelist" : "blacklist")}");
+
+        if (opts.MultiPane)
+            return RunScopeMode(timeoutSec, opts.WhitelistScope, opts);
+
+        if (opts.Scrolling)
+        {
+            if (opts.FastScroll)
+                return RunDmesgMode(timeoutSec, longForm: !opts.Easy, opts);
+            // Keep noise modest so shot+rec inject fit pairwise's short wall budget
+            // (~30s). Hard still uses the hostile fixture text; easy uses the short one.
+            var noise = opts.Easy ? 3 : 5;
+            return RunStreamMode(timeoutSec, noiseBeforeShot: noise, noiseBeforeRec: noise, opts);
+        }
+
+        return RunHardMode(timeoutSec, opts);
+    }
+
+    private sealed record HarnessOpts(
+        bool Easy,
+        bool Scrolling,
+        bool FastScroll,
+        bool MultiPane,
+        OcrSpeedMode OcrMode,
+        bool WhitelistScope);
+
+    private static FixtureOptions ParseFixtureOptions(ReadOnlySpan<string> args)
+    {
+        var phrase = ScopeAlphaTrigger;
+        var title = "fixture";
+        var x = 40;
+        var y = 40;
+        var w = 360;
+        var h = 280;
+        var easy = false;
+        var scrollMs = 0;
+        for (var i = 0; i < args.Length; i++)
+        {
+            static bool Next(ReadOnlySpan<string> a, int idx, out string value)
+            {
+                if (idx + 1 < a.Length)
+                {
+                    value = a[idx + 1];
+                    return true;
+                }
+
+                value = "";
+                return false;
+            }
+
+            switch (args[i].ToLowerInvariant())
+            {
+                case "--phrase" when Next(args, i, out var p):
+                    phrase = p;
+                    i++;
+                    break;
+                case "--title" when Next(args, i, out var t):
+                    title = t;
+                    i++;
+                    break;
+                case "--x" when Next(args, i, out var xs) && int.TryParse(xs, out var xi):
+                    x = xi;
+                    i++;
+                    break;
+                case "--y" when Next(args, i, out var ys) && int.TryParse(ys, out var yi):
+                    y = yi;
+                    i++;
+                    break;
+                case "--w" when Next(args, i, out var ws) && int.TryParse(ws, out var wi):
+                    w = wi;
+                    i++;
+                    break;
+                case "--h" when Next(args, i, out var hs) && int.TryParse(hs, out var hi):
+                    h = hi;
+                    i++;
+                    break;
+                case "--easy":
+                    easy = true;
+                    break;
+                case "--scroll" when Next(args, i, out var sm) && int.TryParse(sm, out var si):
+                    scrollMs = Math.Max(0, si);
+                    i++;
+                    break;
+            }
+        }
+
+        return new FixtureOptions(phrase, title, new Rectangle(x, y, w, h), easy, scrollMs);
+    }
+
+    private sealed record FixtureOptions(
+        string Phrase,
+        string Title,
+        Rectangle Bounds,
+        bool Easy,
+        int ScrollMs);
+
+    private static int RunHardMode(int timeoutSec, HarnessOpts? opts = null)
     {
         var workDir = Path.Combine(Path.GetTempPath(), "pay_attention_e2e_" + Guid.NewGuid().ToString("N")[..8]);
         var captureDir = Path.Combine(workDir, "captures");
@@ -88,9 +302,10 @@ internal static class Program
         Directory.CreateDirectory(captureDir);
         Directory.CreateDirectory(logDir);
 
-        var fixtureBody = BuildFixtureText();
+        var easy = opts?.Easy == true;
+        var fixtureBody = BuildFixtureText(easy);
         File.WriteAllText(textPath, fixtureBody);
-        Console.WriteLine($"Mode: hard");
+        Console.WriteLine(opts is null ? "Mode: hard" : "Mode: hard (pairwise)");
         Console.WriteLine($"Work dir: {workDir}");
         Console.WriteLine($"Wrote hard fixture: {textPath}");
         Console.WriteLine($"Shot trigger: {ShotTrigger}");
@@ -108,9 +323,15 @@ internal static class Program
 
         try
         {
-            overlay = CreateConsoleOverlay("pay_attention_e2e_hard", fixtureBody, scrollBars: false);
+            overlay = CreateConsoleOverlay("pay_attention_e2e_hard", fixtureBody, scrollBars: false, easy: easy);
 
             var config = BuildConfig(captureDir);
+            ApplyHarnessOpts(config, opts);
+            if (easy)
+                UseEasyRecTrigger(config);
+            // Record of punctuation-heavy tokens needs Thorough even when shot is Fast.
+            foreach (var t in config.Triggers.Where(t => t.Action == CaptureAction.Record))
+                t.OcrMode = OcrSpeedMode.Thorough;
             monitor = new CaptureMonitor(config, logger);
             if (!monitor.OcrAvailable)
             {
@@ -139,7 +360,8 @@ internal static class Program
                     shotPath ??= e.OutputPath;
 
                 if (e.Action == CaptureAction.Record ||
-                    string.Equals(e.TriggerText, RecTrigger, StringComparison.Ordinal))
+                    string.Equals(e.TriggerText, RecTrigger, StringComparison.Ordinal) ||
+                    string.Equals(e.TriggerText, EasyRecTrigger, StringComparison.Ordinal))
                     recPath ??= e.OutputPath;
             };
 
@@ -202,7 +424,11 @@ internal static class Program
         return exitCode;
     }
 
-    private static int RunStreamMode(int timeoutSec)
+    private static int RunStreamMode(
+        int timeoutSec,
+        int noiseBeforeShot,
+        int noiseBeforeRec,
+        HarnessOpts? opts = null)
     {
         var workDir = Path.Combine(Path.GetTempPath(), "pay_attention_e2e_stream_" + Guid.NewGuid().ToString("N")[..8]);
         var captureDir = Path.Combine(workDir, "captures");
@@ -210,10 +436,15 @@ internal static class Program
         Directory.CreateDirectory(captureDir);
         Directory.CreateDirectory(logDir);
 
-        Console.WriteLine("Mode: stream");
+        var shotAt = noiseBeforeShot + 1;
+        var recAt = shotAt + noiseBeforeRec + 1;
+        Console.WriteLine(
+            opts is not null ? "Mode: stream (pairwise)" :
+            noiseBeforeShot > 5 || noiseBeforeRec > 5 ? "Mode: stream-long" : "Mode: stream");
         Console.WriteLine($"Work dir: {workDir}");
         Console.WriteLine($"Shot trigger: {ShotTrigger}");
         Console.WriteLine($"Rec trigger:  {RecTrigger}");
+        Console.WriteLine($"Noise before shot/rec: {noiseBeforeShot}/{noiseBeforeRec}");
         Console.WriteLine($"Latency budget: {DetectLatencyBudgetMs}ms per trigger");
 
         var exitCode = 1;
@@ -229,6 +460,7 @@ internal static class Program
         var started = DateTime.UtcNow;
         var finished = false;
         var streamStep = 0;
+        var easy = opts?.Easy == true;
 
         DateTime? shotInjectUtc = null;
         DateTime? recInjectUtc = null;
@@ -240,13 +472,21 @@ internal static class Program
             // Scroll phase overlay (lifetime host for Application.Run). REC inject swaps to a
             // fresh fixture form — assigning Text on a TextBox that was AppendText-scrolled
             // leaves PrintWindow/OCR unable to recover err#42v2 even when the line looks fine.
-            scrollOverlay = CreateConsoleOverlay("pay_attention_e2e_stream", "", scrollBars: false);
+            scrollOverlay = CreateConsoleOverlay("pay_attention_e2e_stream", "", scrollBars: false, easy: easy);
             overlay = scrollOverlay;
             box = (TextBox)overlay.Controls[0];
 
             var config = BuildConfig(captureDir);
             config.OcrIntervalMs = 400;
-            // Thorough (default): fixture after inject needs the full OCR cascade (same tokens as hard).
+            ApplyHarnessOpts(config, opts);
+            if (easy)
+                UseEasyRecTrigger(config);
+            // Stream REC fixture needs Thorough; blacklist monitor OCR is noisier still.
+            foreach (var t in config.Triggers)
+            {
+                if (t.Action == CaptureAction.Record || (opts is { WhitelistScope: false }))
+                    t.OcrMode = OcrSpeedMode.Thorough;
+            }
             monitor = new CaptureMonitor(config, logger);
             if (!monitor.OcrAvailable)
             {
@@ -320,13 +560,13 @@ internal static class Program
                 KeepOnTop(overlay);
                 streamStep++;
 
-                if (streamStep <= 5)
+                if (streamStep < shotAt)
                 {
                     AppendLine(box, $"[{DateTime.Now:HH:mm:ss.fff}] boot noise {streamStep} status=ok");
                     return;
                 }
 
-                if (streamStep == 6)
+                if (streamStep == shotAt)
                 {
                     AppendLine(box, $"noise-punct:{PunctuationSoup}");
                     AppendLine(box, $"SHOT>{ShotTrigger}<");
@@ -338,13 +578,13 @@ internal static class Program
                     return;
                 }
 
-                if (streamStep is >= 7 and <= 11)
+                if (streamStep > shotAt && streamStep < recAt)
                 {
                     AppendLine(box, $"scroll {streamStep} {WeirdSentence}");
                     return;
                 }
 
-                if (streamStep == 12)
+                if (streamStep == recAt)
                 {
                     // Timed REC inject: hide the scrolled TextBox and show a fresh hard-style
                     // fixture window. Reusing the scrolled TextBox via Text= breaks OCR of
@@ -353,8 +593,9 @@ internal static class Program
                     scrollOverlay?.Hide();
                     overlay = CreateConsoleOverlay(
                         "pay_attention_e2e_stream_rec",
-                        BuildFixtureText(),
-                        scrollBars: false);
+                        BuildFixtureText(easy),
+                        scrollBars: false,
+                        easy: easy);
                     box = (TextBox)overlay.Controls[0];
                     // Timestamp before Show so TriggerFired during first paint counts for latency.
                     recInjectUtc = DateTime.UtcNow;
@@ -455,7 +696,7 @@ internal static class Program
     /// Fast-flowing white/red dmesg with an MCE that scrolls through mid-stream.
     /// Single trigger phrase: RIP !INEXACT! (screenshot + record).
     /// </summary>
-    private static int RunDmesgMode(int timeoutSec)
+    private static int RunDmesgMode(int timeoutSec, bool longForm, HarnessOpts? opts = null)
     {
         var workDir = Path.Combine(Path.GetTempPath(), "pay_attention_e2e_dmesg_" + Guid.NewGuid().ToString("N")[..8]);
         var captureDir = Path.Combine(workDir, "captures");
@@ -463,7 +704,9 @@ internal static class Program
         Directory.CreateDirectory(captureDir);
         Directory.CreateDirectory(logDir);
 
-        Console.WriteLine("Mode: dmesg");
+        Console.WriteLine(
+            opts is not null ? "Mode: dmesg (pairwise)" :
+            longForm ? "Mode: dmesg-long" : "Mode: dmesg");
         Console.WriteLine($"Work dir: {workDir}");
         Console.WriteLine($"Trigger: {DmesgTrigger}");
         Console.WriteLine($"Latency budget: {DetectLatencyBudgetMs}ms");
@@ -485,7 +728,7 @@ internal static class Program
         int? shotLatencyMs = null;
         int? recLatencyMs = null;
 
-        var script = BuildDmesgScript();
+        var script = BuildDmesgScript(longForm);
 
         try
         {
@@ -494,6 +737,7 @@ internal static class Program
                      ?? throw new InvalidOperationException("missing dmesg pane");
 
             var config = BuildDmesgConfig(captureDir);
+            ApplyHarnessOpts(config, opts);
             monitor = new CaptureMonitor(config, logger);
             if (!monitor.OcrAvailable)
             {
@@ -666,6 +910,668 @@ internal static class Program
         return exitCode;
     }
 
+    /// <summary>
+    /// Static hard fixture with 50 Screenshot triggers; only ShotTrigger is on screen.
+    /// Slot places that real row at first / mid (index 24) / last.
+    /// </summary>
+    private static int RunManyMode(int timeoutSec, string slot)
+    {
+        var workDir = Path.Combine(Path.GetTempPath(), "pay_attention_e2e_many_" + Guid.NewGuid().ToString("N")[..8]);
+        var captureDir = Path.Combine(workDir, "captures");
+        var logDir = Path.Combine(workDir, "logs");
+        Directory.CreateDirectory(captureDir);
+        Directory.CreateDirectory(logDir);
+
+        var realIndex = slot switch
+        {
+            "mid" => 24,
+            "last" => 49,
+            _ => 0
+        };
+
+        Console.WriteLine("Mode: many");
+        Console.WriteLine($"Work dir: {workDir}");
+        Console.WriteLine($"Real trigger slot: {slot} (index {realIndex}/49)");
+        Console.WriteLine($"Shot trigger: {ShotTrigger}");
+
+        var exitCode = 1;
+        CaptureMonitor? monitor = null;
+        Form? overlay = null;
+        System.Windows.Forms.Timer? pollTimer = null;
+        var logger = new AppLogger(logDir);
+        string? shotPath = null;
+        var started = DateTime.UtcNow;
+        var finished = false;
+        var badFire = false;
+
+        try
+        {
+            overlay = CreateConsoleOverlay("pay_attention_e2e_many", BuildFixtureText(), scrollBars: false);
+            var config = BuildManyTriggerConfig(captureDir, realIndex);
+            monitor = new CaptureMonitor(config, logger);
+            if (!monitor.OcrAvailable)
+            {
+                Console.Error.WriteLine("FAIL: Windows OCR unavailable");
+                return 2;
+            }
+
+            void TryFinish(int code, string? detail = null)
+            {
+                if (finished)
+                    return;
+                finished = true;
+                exitCode = code;
+                if (detail is not null)
+                    Console.Error.WriteLine(detail);
+                pollTimer?.Stop();
+                try { monitor?.Stop(); } catch { /* ignore */ }
+                overlay?.Close();
+            }
+
+            monitor.TriggerFired += (_, e) =>
+            {
+                Console.WriteLine($"Fired: {e.TriggerText} ({e.Action}) -> {e.OutputPath}");
+                if (!string.Equals(e.TriggerText, ShotTrigger, StringComparison.Ordinal))
+                {
+                    badFire = true;
+                    TryFinish(1, $"FAIL: unexpected trigger '{e.TriggerText}' (only {ShotTrigger} should fire)");
+                    return;
+                }
+
+                if (e.Action == CaptureAction.Screenshot)
+                    shotPath ??= e.OutputPath;
+            };
+
+            monitor.StatusChanged += (_, e) =>
+                Console.WriteLine($"Status: {e.Status} {e.Detail}");
+
+            pollTimer = new System.Windows.Forms.Timer { Interval = 200 };
+            pollTimer.Tick += (_, _) =>
+            {
+                if (finished)
+                    return;
+
+                KeepOnTop(overlay);
+                shotPath ??= Directory.GetFiles(captureDir, "*_screenshot.*")
+                    .OrderByDescending(File.GetCreationTimeUtc)
+                    .FirstOrDefault();
+
+                if (!badFire &&
+                    shotPath is not null &&
+                    File.Exists(shotPath) &&
+                    new FileInfo(shotPath).Length >= 100)
+                {
+                    Console.WriteLine("PASS");
+                    Console.WriteLine($"  screenshot: {shotPath} ({new FileInfo(shotPath).Length} bytes)");
+                    TryFinish(0);
+                    return;
+                }
+
+                if ((DateTime.UtcNow - started).TotalSeconds < timeoutSec)
+                    return;
+
+                FailTimeout(shotPath, null, captureDir);
+                TryFinish(1);
+            };
+
+            overlay.Shown += (_, _) =>
+            {
+                overlay.Activate();
+                overlay.BringToFront();
+                var settle = new System.Windows.Forms.Timer { Interval = 800 };
+                settle.Tick += (_, _) =>
+                {
+                    settle.Stop();
+                    settle.Dispose();
+                    overlay.BringToFront();
+                    monitor.Start();
+                    Console.WriteLine($"MANY E2E: monitoring up to {timeoutSec}s…");
+                    pollTimer.Start();
+                };
+                settle.Start();
+            };
+
+            overlay.FormClosed += (_, _) => Application.ExitThread();
+            Application.Run(overlay);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("FAIL: " + ex);
+            exitCode = 3;
+        }
+        finally
+        {
+            Cleanup(pollTimer, monitor, overlay, workDir);
+        }
+
+        return exitCode;
+    }
+
+    private static AppConfig BuildManyTriggerConfig(string captureDir, int realIndex)
+    {
+        var config = BuildConfig(captureDir);
+        config.DebounceSeconds = 4;
+        var triggers = new List<TriggerConfig>(50);
+        for (var i = 0; i < 50; i++)
+        {
+            var text = i == realIndex ? ShotTrigger : $"qqT{i:D2}zz";
+            triggers.Add(new TriggerConfig
+            {
+                Id = Guid.NewGuid(),
+                Text = text,
+                Match = MatchMode.Contains,
+                Action = CaptureAction.Screenshot,
+                OcrMode = OcrSpeedMode.Thorough,
+                Enabled = true
+            });
+        }
+
+        config.Triggers = triggers;
+        Console.WriteLine($"Triggers: 50 (real '{ShotTrigger}' at index {realIndex})");
+        return config;
+    }
+
+    /// <summary>Child process: show one console window and wait until closed.</summary>
+    private static int RunFixtureMode(FixtureOptions opts)
+    {
+        Console.WriteLine("Mode: fixture");
+        Console.WriteLine($"Phrase: {opts.Phrase}");
+        Console.WriteLine($"Title: {opts.Title}");
+        Console.WriteLine($"Bounds: {opts.Bounds}");
+
+        var body = new StringBuilder();
+        body.AppendLine($"=== {opts.Title} fixture ===");
+        body.AppendLine(opts.Easy ? "noise: easy pane" : "noise: side-by-side scope window");
+        body.AppendLine($"TOKEN>{opts.Phrase}<");
+        body.AppendLine("noise: end of pane");
+
+        // Scroll fixtures need a vertical scrollbar so AppendText moves content off the top.
+        // Keep the hard (8.25pt) font when scrolling — large easy fonts + rapid AppendText
+        // often tear under PrintWindow/OCR on the blacklist per-window path.
+        var form = CreateConsoleOverlay(
+            "pay_attention_e2e_fixture_" + opts.Title,
+            body.ToString(),
+            scrollBars: opts.ScrollMs > 0,
+            easy: opts.Easy && opts.ScrollMs <= 0);
+        form.Text = opts.Title;
+        form.Bounds = opts.Bounds;
+        form.FormClosed += (_, _) => Application.ExitThread();
+
+        System.Windows.Forms.Timer? scrollTimer = null;
+        var scrollStep = 0;
+        form.Shown += (_, _) =>
+        {
+            form.TopMost = true;
+            form.BringToFront();
+            if (opts.ScrollMs <= 0 || form.Controls.Count == 0 || form.Controls[0] is not TextBox box)
+                return;
+
+            scrollTimer = new System.Windows.Forms.Timer { Interval = opts.ScrollMs };
+            scrollTimer.Tick += (_, _) =>
+            {
+                scrollStep++;
+                // Real console scroll: append noise, then re-emit the token so it stays
+                // in the visible bottom of the pane for OCR (ScrollToCaret).
+                AppendLine(box, $"[{DateTime.Now:HH:mm:ss.fff}] noise scroll {scrollStep}");
+                AppendLine(box, $"TOKEN>{opts.Phrase}<");
+            };
+            scrollTimer.Start();
+        };
+        form.FormClosed += (_, _) =>
+        {
+            scrollTimer?.Stop();
+            scrollTimer?.Dispose();
+        };
+        Application.Run(form);
+        return 0;
+    }
+
+    private static int RunScopeMode(int timeoutSec, bool whitelist, HarnessOpts? opts = null)
+    {
+        var workDir = Path.Combine(Path.GetTempPath(), "pay_attention_e2e_scope_" + Guid.NewGuid().ToString("N")[..8]);
+        var captureDir = Path.Combine(workDir, "captures");
+        var logDir = Path.Combine(workDir, "logs");
+        var binDir = Path.Combine(workDir, "bin");
+        Directory.CreateDirectory(captureDir);
+        Directory.CreateDirectory(logDir);
+        Directory.CreateDirectory(binDir);
+
+        Console.WriteLine(
+            opts is not null ? $"Mode: scope-{(whitelist ? "white" : "black")} (pairwise)" :
+            whitelist ? "Mode: scope-white" : "Mode: scope-black");
+        Console.WriteLine($"Work dir: {workDir}");
+        Console.WriteLine($"Alpha: {ScopeAlphaTrigger}  Beta: {ScopeBetaTrigger}  Decoy: {ScopeDecoyTrigger}");
+
+        var exitCode = 1;
+        CaptureMonitor? monitor = null;
+        System.Windows.Forms.Timer? pollTimer = null;
+        Form? host = null;
+        var logger = new AppLogger(logDir);
+        var children = new List<Process>();
+        var started = DateTime.UtcNow;
+        var finished = false;
+        string? alphaPath = null;
+        string? betaPath = null;
+        var decoyFired = false;
+        // Whitelist: 0 = Alpha foreground, 1 = Beta foreground. Blacklist: unused (both panes stay up).
+        var phase = 0;
+        var easy = opts?.Easy == true;
+        // Multi-pane scroll must stay slow enough for OCR (esp. Thorough) to catch tokens
+        // at the bottom of the pane; stream/dmesg single-window paths use their own timers.
+        var scrollMs = opts is { Scrolling: true }
+            ? (opts.FastScroll
+                ? (opts.OcrMode == OcrSpeedMode.Thorough ? 220 : 120)
+                : 350)
+            : 0;
+
+        try
+        {
+            var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
+            var paneW = Math.Min(340, (area.Width - 80) / 3);
+            var paneH = Math.Min(280, area.Height - 80);
+            var y = area.Top + 40;
+            var alphaBounds = new Rectangle(area.Left + 20, y, paneW, paneH);
+            var betaBounds = new Rectangle(area.Left + 30 + paneW, y, paneW, paneH);
+            var decoyBounds = new Rectangle(area.Left + 40 + 2 * paneW, y, paneW, paneH);
+
+            EnsureScopeExeCopies(binDir);
+            children.Add(StartFixtureChild(binDir, ScopeAlphaExe, ScopeAlphaTrigger, "Alpha", alphaBounds, easy, scrollMs));
+            children.Add(StartFixtureChild(binDir, ScopeBetaExe, ScopeBetaTrigger, "Beta", betaBounds, easy, scrollMs));
+            children.Add(StartFixtureChild(binDir, ScopeDecoyExe, ScopeDecoyTrigger, "Decoy", decoyBounds, easy, scrollMs));
+            Thread.Sleep(1200);
+
+            var alphaId = Guid.NewGuid();
+            var betaId = Guid.NewGuid();
+            var decoyId = Guid.NewGuid();
+            var config = BuildScopeConfig(captureDir, whitelist, alphaId, betaId, decoyId);
+            ApplyHarnessOpts(config, opts, preserveScopeApps: true);
+            // Decoy stays masked on screen; disable its trigger so AllEnabledMatched can
+            // early-stop once Alpha+Beta are found (avoids burning Thorough on more HWNDs).
+            if (opts is { Scrolling: true })
+            {
+                foreach (var t in config.Triggers)
+                {
+                    if (string.Equals(t.Text, ScopeDecoyTrigger, StringComparison.Ordinal))
+                        t.Enabled = false;
+                }
+            }
+            monitor = new CaptureMonitor(config, logger);
+            if (!monitor.OcrAvailable)
+            {
+                Console.Error.WriteLine("FAIL: Windows OCR unavailable");
+                return 2;
+            }
+
+            host = new Form
+            {
+                Text = "pay_attention scope host",
+                ShowInTaskbar = false,
+                Opacity = 0,
+                Width = 1,
+                Height = 1,
+                StartPosition = FormStartPosition.Manual,
+                Location = new Point(-32000, -32000)
+            };
+
+            void TryFinish(int code, string? detail = null)
+            {
+                if (finished)
+                    return;
+                finished = true;
+                exitCode = code;
+                if (detail is not null)
+                    Console.Error.WriteLine(detail);
+                pollTimer?.Stop();
+                try { monitor?.Stop(); } catch { /* ignore */ }
+                host?.Close();
+            }
+
+            monitor.TriggerFired += (_, e) =>
+            {
+                Console.WriteLine($"Fired: {e.TriggerText} ({e.Action}) -> {e.OutputPath}");
+                if (string.Equals(e.TriggerText, ScopeDecoyTrigger, StringComparison.Ordinal))
+                {
+                    decoyFired = true;
+                    TryFinish(1, $"FAIL: decoy trigger '{ScopeDecoyTrigger}' fired");
+                    return;
+                }
+
+                if (string.Equals(e.TriggerText, ScopeAlphaTrigger, StringComparison.Ordinal) &&
+                    e.Action == CaptureAction.Screenshot)
+                    alphaPath ??= e.OutputPath;
+                if (string.Equals(e.TriggerText, ScopeBetaTrigger, StringComparison.Ordinal) &&
+                    e.Action == CaptureAction.Screenshot)
+                    betaPath ??= e.OutputPath;
+            };
+
+            monitor.StatusChanged += (_, e) =>
+                Console.WriteLine($"Status: {e.Status} {e.Detail}");
+
+            pollTimer = new System.Windows.Forms.Timer { Interval = 250 };
+            pollTimer.Tick += (_, _) =>
+            {
+                if (finished)
+                    return;
+
+                alphaPath ??= FindShotFor(captureDir, ScopeAlphaTrigger);
+                betaPath ??= FindShotFor(captureDir, ScopeBetaTrigger);
+
+                if (whitelist)
+                {
+                    if (phase == 0)
+                    {
+                        ActivateProcessMainWindow(children[0]);
+                        if (alphaPath is not null && File.Exists(alphaPath) && new FileInfo(alphaPath).Length >= 100)
+                        {
+                            if (betaPath is not null)
+                            {
+                                TryFinish(1, "FAIL: Beta fired while Alpha was foreground");
+                                return;
+                            }
+
+                            Console.WriteLine("Phase: Alpha captured; switching to Beta foreground");
+                            phase = 1;
+                            ActivateProcessMainWindow(children[1]);
+                        }
+                    }
+                    else
+                    {
+                        ActivateProcessMainWindow(children[1]);
+                        if (betaPath is not null && File.Exists(betaPath) && new FileInfo(betaPath).Length >= 100)
+                        {
+                            if (decoyFired)
+                                return;
+                            Console.WriteLine("PASS");
+                            Console.WriteLine($"  alpha: {alphaPath}");
+                            Console.WriteLine($"  beta:  {betaPath}");
+                            Console.WriteLine("  screenshot: scope-white");
+                            TryFinish(0);
+                            return;
+                        }
+                    }
+                }
+                else
+                {
+                    // All three panes stay visible. Focus stays on Alpha so a fully
+                    // blacklisted foreground cannot skip OCR. Alpha and Beta must both fire;
+                    // the masked decoy must not.
+                    ActivateProcessMainWindow(children[0]);
+                    if (alphaPath is not null && betaPath is not null &&
+                        File.Exists(alphaPath) && File.Exists(betaPath) &&
+                        new FileInfo(alphaPath).Length >= 100 &&
+                        new FileInfo(betaPath).Length >= 100)
+                    {
+                        if (decoyFired)
+                            return;
+                        Console.WriteLine("PASS");
+                        Console.WriteLine($"  alpha: {alphaPath}");
+                        Console.WriteLine($"  beta:  {betaPath}");
+                        Console.WriteLine("  screenshot: scope-black");
+                        TryFinish(0);
+                        return;
+                    }
+                }
+
+                if ((DateTime.UtcNow - started).TotalSeconds < timeoutSec)
+                    return;
+
+                FailTimeout(alphaPath, betaPath, captureDir);
+                TryFinish(1, "FAIL: timed out waiting for scoped captures");
+            };
+
+            host.Shown += (_, _) =>
+            {
+                var settle = new System.Windows.Forms.Timer { Interval = 900 };
+                settle.Tick += (_, _) =>
+                {
+                    settle.Stop();
+                    settle.Dispose();
+                    ActivateProcessMainWindow(children[0]);
+                    monitor.Start();
+                    Console.WriteLine($"SCOPE E2E: monitoring up to {timeoutSec}s…");
+                    pollTimer.Start();
+                };
+                settle.Start();
+            };
+
+            host.FormClosed += (_, _) => Application.ExitThread();
+            Application.Run(host);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("FAIL: " + ex);
+            exitCode = 3;
+        }
+        finally
+        {
+            pollTimer?.Dispose();
+            monitor?.Dispose();
+            foreach (var p in children)
+            {
+                try
+                {
+                    if (!p.HasExited)
+                        p.Kill(entireProcessTree: true);
+                }
+                catch { /* ignore */ }
+
+                try { p.Dispose(); } catch { /* ignore */ }
+            }
+
+            try { host?.Dispose(); } catch { /* ignore */ }
+
+            try
+            {
+                if (Directory.Exists(workDir))
+                    Directory.Delete(workDir, recursive: true);
+            }
+            catch
+            {
+                Console.WriteLine($"Note: left work dir at {workDir}");
+            }
+        }
+
+        return exitCode;
+    }
+
+    private static AppConfig BuildScopeConfig(
+        string captureDir,
+        bool whitelist,
+        Guid alphaId,
+        Guid betaId,
+        Guid decoyId)
+    {
+        var alphaProc = ApplicationScopeEvaluator.NormalizeProcessName(ScopeAlphaExe);
+        var betaProc = ApplicationScopeEvaluator.NormalizeProcessName(ScopeBetaExe);
+        var decoyProc = ApplicationScopeEvaluator.NormalizeProcessName(ScopeDecoyExe);
+
+        var triggers = new List<TriggerConfig>
+        {
+            new()
+            {
+                Id = alphaId,
+                Text = ScopeAlphaTrigger,
+                Match = MatchMode.Contains,
+                Action = CaptureAction.Screenshot,
+                Enabled = true
+            },
+            new()
+            {
+                Id = betaId,
+                Text = ScopeBetaTrigger,
+                Match = MatchMode.Contains,
+                Action = CaptureAction.Screenshot,
+                Enabled = true
+            },
+            new()
+            {
+                Id = decoyId,
+                Text = ScopeDecoyTrigger,
+                Match = MatchMode.Contains,
+                Action = CaptureAction.Screenshot,
+                Enabled = true
+            }
+        };
+
+        List<ApplicationConfig> apps;
+        ApplicationScopeMode scope;
+        if (whitelist)
+        {
+            scope = ApplicationScopeMode.Whitelisted;
+            apps =
+            [
+                new ApplicationConfig
+                {
+                    Enabled = true,
+                    ProcessName = alphaProc,
+                    ListMode = ApplicationListMode.Whitelist,
+                    DebounceSeconds = 2,
+                    TriggerFilter = ApplicationTriggerFilter.Selected,
+                    TriggerIds = [alphaId]
+                },
+                new ApplicationConfig
+                {
+                    Enabled = true,
+                    ProcessName = betaProc,
+                    ListMode = ApplicationListMode.Whitelist,
+                    DebounceSeconds = 2,
+                    TriggerFilter = ApplicationTriggerFilter.Selected,
+                    TriggerIds = [betaId]
+                }
+            ];
+            Console.WriteLine($"Application scope: whitelisted ({alphaProc}, {betaProc})");
+        }
+        else
+        {
+            scope = ApplicationScopeMode.AllMinusBlacklisted;
+            apps =
+            [
+                new ApplicationConfig
+                {
+                    Enabled = true,
+                    ProcessName = decoyProc,
+                    ListMode = ApplicationListMode.Blacklist,
+                    DebounceSeconds = 2,
+                    TriggerFilter = ApplicationTriggerFilter.All
+                },
+                new ApplicationConfig
+                {
+                    Enabled = true,
+                    ProcessName = "PayAttention",
+                    ListMode = ApplicationListMode.Blacklist,
+                    DebounceSeconds = 2,
+                    TriggerFilter = ApplicationTriggerFilter.All
+                }
+            ];
+            Console.WriteLine($"Application scope: all-minus-blacklisted (mask {decoyProc})");
+        }
+
+        return new AppConfig
+        {
+            OcrIntervalMs = 400,
+            DebounceSeconds = 2,
+            RecordBufferSeconds = 5,
+            RecordFps = 3,
+            RecordFormat = RecordFormat.Avi,
+            RecordJpegQuality = 70,
+            ScreenshotFormat = ScreenshotFormat.Jpeg,
+            OcrMaxWidth = 1920,
+            OcrUpscalePercent = 100,
+            CaptureScope = CaptureScope.Monitor,
+            MonitorSelection = MonitorSelection.Primary,
+            ApplicationScope = scope,
+            Applications = apps,
+            CaptureDirectory = captureDir,
+            DebugSaveJsonSidecars = false,
+            Triggers = triggers
+        };
+    }
+
+    private static void EnsureScopeExeCopies(string binDir)
+    {
+        var self = Environment.ProcessPath
+                   ?? throw new InvalidOperationException("ProcessPath unavailable");
+        var selfDir = Path.GetDirectoryName(self)
+                      ?? throw new InvalidOperationException("missing exe directory");
+
+        // Dependency DLL/deps must sit next to each renamed apphost.
+        foreach (var file in Directory.GetFiles(selfDir))
+        {
+            var fileName = Path.GetFileName(file);
+            File.Copy(file, Path.Combine(binDir, fileName), overwrite: true);
+        }
+
+        foreach (var name in new[] { ScopeAlphaExe, ScopeBetaExe, ScopeDecoyExe })
+            File.Copy(self, Path.Combine(binDir, name), overwrite: true);
+    }
+
+    private static Process StartFixtureChild(
+        string binDir,
+        string exeName,
+        string phrase,
+        string title,
+        Rectangle bounds,
+        bool easy = false,
+        int scrollMs = 0)
+    {
+        var exe = Path.Combine(binDir, exeName);
+        var args =
+            $"fixture --phrase {phrase} --title {title} --x {bounds.X} --y {bounds.Y} --w {bounds.Width} --h {bounds.Height}";
+        if (easy)
+            args += " --easy";
+        if (scrollMs > 0)
+            args += $" --scroll {scrollMs}";
+        var psi = new ProcessStartInfo
+        {
+            FileName = exe,
+            Arguments = args,
+            UseShellExecute = false,
+            WorkingDirectory = binDir
+        };
+        var proc = Process.Start(psi)
+                   ?? throw new InvalidOperationException("failed to start " + exeName);
+        Console.WriteLine($"Started {exeName} pid={proc.Id} bounds={bounds}");
+        return proc;
+    }
+
+    private static void ActivateProcessMainWindow(Process proc)
+    {
+        try
+        {
+            proc.Refresh();
+            if (proc.HasExited)
+                return;
+            var hwnd = proc.MainWindowHandle;
+            if (hwnd == IntPtr.Zero)
+                return;
+            NativeMethods.ShowWindow(hwnd, 9); // SW_RESTORE
+            NativeMethods.SetForegroundWindow(hwnd);
+        }
+        catch
+        {
+            // ignore activation races
+        }
+    }
+
+    private static string? FindShotFor(string captureDir, string triggerText)
+    {
+        var safe = new string(triggerText.Where(ch => char.IsLetterOrDigit(ch)).ToArray());
+        if (safe.Length == 0)
+            return null;
+        return Directory.GetFiles(captureDir, $"*{safe}*_screenshot.*")
+            .OrderByDescending(File.GetCreationTimeUtc)
+            .FirstOrDefault();
+    }
+
+    private static class NativeMethods
+    {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    }
+
     private static AppConfig BuildDmesgConfig(string captureDir)
     {
         var config = BuildConfig(captureDir);
@@ -753,9 +1659,67 @@ internal static class Program
         };
     }
 
-    private static string BuildFixtureText()
+    /// <summary>
+    /// Apply pairwise OCR mode and (for single-pane recipes) whitelist vs blacklist.
+    /// Scope multi-pane configs already encode apps — only OCR mode is overwritten then.
+    /// </summary>
+    private static void ApplyHarnessOpts(AppConfig config, HarnessOpts? opts, bool preserveScopeApps = false)
+    {
+        if (opts is null)
+            return;
+
+        foreach (var t in config.Triggers ?? [])
+            t.OcrMode = opts.OcrMode;
+
+        if (preserveScopeApps)
+            return;
+
+        if (opts.WhitelistScope)
+        {
+            // BuildConfig already whitelists the harness process.
+            return;
+        }
+
+        config.ApplicationScope = ApplicationScopeMode.AllMinusBlacklisted;
+        config.Applications =
+        [
+            new ApplicationConfig
+            {
+                Enabled = true,
+                ProcessName = "PayAttention",
+                ListMode = ApplicationListMode.Blacklist,
+                DebounceSeconds = config.DebounceSeconds,
+                TriggerFilter = ApplicationTriggerFilter.All
+            }
+        ];
+        Console.WriteLine("Application scope: all-minus-blacklisted (pairwise)");
+    }
+
+    private static void UseEasyRecTrigger(AppConfig config)
+    {
+        foreach (var t in config.Triggers ?? [])
+        {
+            if (t.Action == CaptureAction.Record ||
+                string.Equals(t.Text, RecTrigger, StringComparison.Ordinal))
+                t.Text = EasyRecTrigger;
+        }
+    }
+
+    private static string BuildFixtureText(bool easy = false)
     {
         var sb = new StringBuilder();
+        if (easy)
+        {
+            sb.AppendLine("=== pay_attention EASY fixture ===");
+            sb.AppendLine("noise: clear readable lines");
+            sb.AppendLine($"SHOT>{ShotTrigger}<");
+            sb.AppendLine($"REC>{EasyRecTrigger}<");
+            sb.AppendLine(EasyRecTrigger);
+            sb.AppendLine(EasyRecTrigger);
+            sb.AppendLine($"SHOT>{ShotTrigger}<");
+            return sb.ToString();
+        }
+
         sb.AppendLine("=== pay_attention HARD fixture (do not enlarge) ===");
         sb.AppendLine("noise: lorem ipsum dolor sit amet consectetur adipiscing elit sed do");
         sb.AppendLine("noise: 0xDEADBEEF aabbcc status=ok path=C:\\tmp\\x.y delay=3ms");
@@ -771,7 +1735,7 @@ internal static class Program
         return sb.ToString();
     }
 
-    private static Form CreateConsoleOverlay(string name, string text, bool scrollBars)
+    private static Form CreateConsoleOverlay(string name, string text, bool scrollBars, bool easy = false)
     {
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
         var form = new Form
@@ -795,7 +1759,7 @@ internal static class Program
             BorderStyle = BorderStyle.None,
             BackColor = Color.FromArgb(12, 12, 12),
             ForeColor = Color.FromArgb(0, 220, 80),
-            Font = new Font("Consolas", 8.25f, FontStyle.Regular),
+            Font = new Font("Consolas", easy ? 12f : 8.25f, FontStyle.Regular),
             Text = text,
             ScrollBars = scrollBars ? ScrollBars.Vertical : ScrollBars.None
         };
@@ -835,12 +1799,14 @@ internal static class Program
     }
 
     /// <summary>
-    /// Dense dmesg-style dump (~200+ lines): boot chatter → MCE mid-stream → more noise.
+    /// Dense dmesg-style dump (~200+ lines, or ~2× when longForm): boot chatter → MCE → noise.
     /// </summary>
-    private static List<DmesgEvent> BuildDmesgScript()
+    private static List<DmesgEvent> BuildDmesgScript(bool longForm)
     {
         var script = new List<DmesgEvent>();
         void Add(string line, string? inject = null) => script.Add(new DmesgEvent(line, inject));
+        var midCount = longForm ? 320 : 160;
+        var tailCount = longForm ? 80 : 40;
 
         // Hand-authored head (looks like a real cold boot).
         string[] head =
@@ -952,7 +1918,7 @@ internal static class Program
         ];
 
         var t = 1.200;
-        for (var i = 0; i < 160; i++)
+        for (var i = 0; i < midCount; i++)
         {
             t += 0.037 + (i % 7) * 0.001;
             var tmpl = midTemplates[i % midTemplates.Length];
@@ -969,6 +1935,12 @@ internal static class Program
             }
 
             Add($"[   {t,8:0.000000}] {body}");
+        }
+
+        if (longForm)
+        {
+            for (var cpu = 1; cpu <= 31; cpu++)
+                Add($"[    {(2.900 + cpu * 0.012):0.000000}] x86: Re-probing SMP topology for CPU{cpu}");
         }
 
         Add("[   12.440112] systemd[1]: Startup finished in 2.104s (kernel) + 10.112s (userspace) = 12.216s.");
@@ -1010,14 +1982,18 @@ internal static class Program
             "snd_hda_intel", "snd_hda_codec", "snd_pcm", "soundcore", "drm", "amdgpu",
             "ttm", "drm_kms_helper", "video", "wmi", "acpi_cpufreq", "processor",
         ];
-        for (var m = 0; m < modules.Length; m++)
+        var modulePasses = longForm ? 2 : 1;
+        for (var pass = 0; pass < modulePasses; pass++)
         {
-            var ts = 1234567.028000 + m * 0.012;
-            Add($"[{ts:0.000000}] {modules[m]}: loading module");
-            Add($"[{ts:0.000000}] {modules[m]}: module loaded");
+            for (var m = 0; m < modules.Length; m++)
+            {
+                var ts = 1234567.028000 + (pass * modules.Length + m) * 0.012;
+                Add($"[{ts:0.000000}] {modules[m]}: loading module");
+                Add($"[{ts:0.000000}] {modules[m]}: module loaded");
+            }
         }
 
-        for (var i = 0; i < 40; i++)
+        for (var i = 0; i < tailCount; i++)
         {
             var ts = 1234568.100 + i * 0.05;
             Add(i switch

@@ -15,8 +15,9 @@ public enum MatchMode
 }
 
 /// <summary>
-/// Per-trigger OCR thoroughness. Thorough (default) runs the full multi-pass cascade.
-/// Fast budgets fallbacks so briefly visible text can be sampled more often.
+/// Per-trigger OCR thoroughness. Fast (default) budgets fallbacks so briefly visible
+/// text can be sampled more often. Thorough runs the full multi-pass cascade when idle
+/// and digs longer under backlog for hard static text.
 /// </summary>
 public enum OcrSpeedMode
 {
