@@ -109,18 +109,6 @@ public sealed class ScreenGrabber
     }
 
     /// <summary>
-    /// Marks this process as having recent input so a subsequent SetForegroundWindow
-    /// (often from the same process, e.g. a harness timer) can succeed under focus lock.
-    /// </summary>
-    public void PulseForegroundPermission()
-    {
-        const byte vkMenu = 0x12;
-        const uint keyeventfKeyup = 0x0002;
-        NativeMethods.keybd_event(vkMenu, 0, 0, UIntPtr.Zero);
-        NativeMethods.keybd_event(vkMenu, 0, keyeventfKeyup, UIntPtr.Zero);
-    }
-
-    /// <summary>
     /// Top-most visible window (Z-order) whose process is in <paramref name="processNames"/>.
     /// Used when OS FG is outside the whitelist but Activate/raise changed Z-order among listed apps.
     /// </summary>
@@ -616,9 +604,6 @@ public sealed class ScreenGrabber
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);
-
-        [DllImport("user32.dll")]
-        public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 
         public const int PwRenderFullContent = 2;
         public const uint RdwInvalidate = 0x0001;
