@@ -49,7 +49,7 @@ The Triggers and Applications sections in Settings can be collapsed (click the s
 | **Thorough** (default) | Text stays on screen (logs, dialogs, dashboards) or is small / low-contrast / oddly punctuated | Runs more OCR passes (slower per frame, higher chance of a match) |
 | **Fast** | Text appears only briefly (fast-scrolling consoles, kernel dumps, flashing status lines) | Prefers fresh screen samples over exhausting every OCR fallback on one frame |
 
-Use **Fast** for lines you expect to scroll away in about a second. Use **Thorough** for hard-to-read tokens that stay visible. You can mix modes across triggers: while only **Fast** triggers remain unmatched, OCR spends less time on fallbacks so fresh frames win; **Thorough** triggers keep the deeper multi-pass search. Each matching row still fires, including two rows that share a phrase but use different actions (Screenshot and Record). A hit is saved as soon as its pass matches, without waiting for later passes that are still looking for other triggers. After a finished search that already matched something, a static scene stays quiet briefly instead of re-scanning every grab — but if any enabled trigger is still unmatched, the same scene is OCR’d again about every **60 seconds** so sticky text is not ignored forever. A total miss is tried again immediately.
+Use **Fast** for lines you expect to scroll away in about a second. Use **Thorough** for hard-to-read tokens that stay visible. You can mix modes across triggers: while only **Fast** triggers remain unmatched, OCR spends less time on fallbacks so fresh frames win; **Thorough** triggers keep the deeper multi-pass search. Each matching row still fires, including two rows that share a phrase but use different actions (Screenshot and Record). A hit is saved as soon as its pass matches, without waiting for later passes that are still looking for other triggers. After a finished search that already matched something, a static scene stays quiet briefly instead of re-scanning every grab — but if any enabled trigger is still unmatched, the same scene is OCR’d again about every **10 seconds** so sticky text is not ignored forever. A total miss is tried again immediately.
 
 Pair **Fast** with a shorter **OCR interval** (about 250–500 ms) when catching flash-by text.
 
@@ -131,7 +131,7 @@ Change the capture folder in Settings. **Import…** / **Export…** copy settin
 ### Submitting logs with a bug report
 
 1. Settings → Behavior → **Log level** = **Debug**, Save  
-2. Reproduce the miss (leave sticky text on screen long enough for a ~60 s re-OCR if needed)  
+2. Reproduce the miss (leave sticky text on screen long enough for a ~10 s re-OCR if needed)  
 3. Tray → **Open logs folder**  
 4. Attach the relevant `app-yyyyMMdd.log` file(s) (treat as sensitive — they can include OCR text)
 

@@ -45,7 +45,7 @@ Or build locally with the .NET 8 SDK and hand them `publish\`:
 - Triggers: `contains` / `exact` / `regex`
 - Actions: Screenshot, Record (pre-roll AVI/GIF + still), Screenshot sequence
 - Debounce + unchanged-screen suppression (sticky consoles do not spam captures)
-- Static unmatched scenes re-OCR about every 60s so sticky text is not ignored forever
+- Static unmatched scenes re-OCR about every 10s so sticky text is not ignored forever
 - Import/Export settings JSON; multi-monitor / foreground-window scope; capture retention; 5-day log pruning
 
 ## Requirements

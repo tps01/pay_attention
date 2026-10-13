@@ -33,7 +33,7 @@ internal sealed class OcrFrameQueue : IDisposable
     /// Re-OCR an unchanged scene after this long when enabled triggers remain unmatched
     /// (avoids silencing sticky text forever after a partial hit).
     /// </summary>
-    public const int StaticSceneResampleSeconds = 60;
+    public const int StaticSceneResampleSeconds = 10;
 
     private readonly Channel<OcrQueuedFrame> _channel;
     private readonly object _fingerprintLock = new();
