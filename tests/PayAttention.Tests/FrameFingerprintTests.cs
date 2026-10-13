@@ -103,7 +103,8 @@ public class TriggerFireGateTests
         const string key = "t1:TOKEN";
         Assert.True(gate.ShouldFire(key, TimeSpan.FromMilliseconds(1), fingerprint: 0xAAAAUL));
         Thread.Sleep(5);
-        Assert.False(gate.ShouldFire(key, TimeSpan.FromMilliseconds(1), fingerprint: 0xAAAAUL));
+        Assert.False(gate.ShouldFire(key, TimeSpan.FromMilliseconds(1), fingerprint: 0xAAAAUL, out var reason));
+        Assert.Equal(FireSuppressReason.UnchangedScene, reason);
     }
 
     [Fact]
@@ -114,7 +115,8 @@ public class TriggerFireGateTests
         Assert.True(gate.ShouldFire(key, TimeSpan.FromMilliseconds(1), fingerprint: 0x0UL));
         Thread.Sleep(5);
         // Flip many bits so Hamming distance exceeds default threshold.
-        Assert.True(gate.ShouldFire(key, TimeSpan.FromMilliseconds(1), fingerprint: ulong.MaxValue));
+        Assert.True(gate.ShouldFire(key, TimeSpan.FromMilliseconds(1), fingerprint: ulong.MaxValue, out var reason));
+        Assert.Equal(FireSuppressReason.None, reason);
     }
 
     [Fact]
@@ -123,7 +125,8 @@ public class TriggerFireGateTests
         var gate = new TriggerFireGate();
         const string key = "t1:TOKEN";
         Assert.True(gate.ShouldFire(key, TimeSpan.FromSeconds(30), fingerprint: 0x1UL));
-        Assert.False(gate.ShouldFire(key, TimeSpan.FromSeconds(30), fingerprint: ulong.MaxValue));
+        Assert.False(gate.ShouldFire(key, TimeSpan.FromSeconds(30), fingerprint: ulong.MaxValue, out var reason));
+        Assert.Equal(FireSuppressReason.Debounce, reason);
     }
 
     [Fact]
@@ -134,6 +137,7 @@ public class TriggerFireGateTests
         Assert.True(gate.ShouldFire(key, TimeSpan.FromSeconds(30), fingerprint: 0x1UL));
         Assert.False(gate.ShouldFire(key, TimeSpan.FromSeconds(30), fingerprint: 0x1UL));
         gate.Reset();
-        Assert.True(gate.ShouldFire(key, TimeSpan.FromSeconds(30), fingerprint: 0x1UL));
+        Assert.True(gate.ShouldFire(key, TimeSpan.FromSeconds(30), fingerprint: 0x1UL, out var reason));
+        Assert.Equal(FireSuppressReason.None, reason);
     }
 }
