@@ -47,8 +47,6 @@ public sealed class CaptureMonitor : IDisposable
     private bool _disposed;
     /// <summary>Last whitelist process that held OS focus (survives focus-lock steals).</summary>
     private string? _stickyWhitelistForeground;
-    private DateTimeOffset _lastForegroundPulseUtc = DateTimeOffset.MinValue;
-    private SynchronizationContext? _uiContext;
 
     public CaptureMonitor(AppConfig config, AppLogger logger)
     {
@@ -101,7 +99,6 @@ public sealed class CaptureMonitor : IDisposable
         }
 
         _paused = false;
-        _uiContext = SynchronizationContext.Current;
         _stickyWhitelistForeground = null;
         _cts = new CancellationTokenSource();
         _ocrQueue = new OcrFrameQueue();
@@ -191,9 +188,8 @@ public sealed class CaptureMonitor : IDisposable
 
                 // Whitelist-only: tell the skip gate which listed processes are alive (cheap
                 // GetProcessesByName). All / AllMinusBlacklisted ignore this snapshot.
-                // Selected follows the real FG when it is listed; otherwise the sticky last
-                // listed FG (focus-lock often steals back to the browser). A rare Alt pulse
-                // lets same-process Activate (e.g. harness) take FG while sticky is empty.
+                // Selected follows the real FG when it is listed; otherwise sticky last listed
+                // FG or top-most listed Z-order (focus-lock often steals OS FG elsewhere).
                 IEnumerable<string>? runningWhitelist = null;
                 if (config.ApplicationScope == ApplicationScopeMode.Whitelisted)
                 {
@@ -386,9 +382,9 @@ public sealed class CaptureMonitor : IDisposable
     }
 
     /// <summary>
-    /// Prefer OS FG when it is a listed app (updates sticky). Otherwise keep sticky so
-    /// Selected does not flip when the browser steals focus. Pulse input so same-process
-    /// Activate (e.g. harness) can reclaim FG; re-read after the pulse.
+    /// Prefer OS FG when it is a listed app (updates sticky). Otherwise follow top-most
+    /// listed Z-order or sticky so Selected does not flip when another app steals OS FG.
+    /// Never injects input — product monitoring must not interrupt the user's keyboard/menus.
     /// </summary>
     private string? ResolveWhitelistForeground(IReadOnlyList<string> whitelist, string? osForeground)
     {
@@ -400,25 +396,9 @@ public sealed class CaptureMonitor : IDisposable
             return fgNorm;
         }
 
-        // Help same-process Activate take FG (focus lock). Pulse on the UI thread when
-        // available so WinForms timers in the same process can SetForegroundWindow.
-        var now = DateTimeOffset.UtcNow;
-        if (now - _lastForegroundPulseUtc > TimeSpan.FromMilliseconds(500))
-        {
-            _lastForegroundPulseUtc = now;
-            PulseForegroundPermissionOnUiThread();
-            fgNorm = ApplicationScopeEvaluator.NormalizeProcessName(_grabber.GetForegroundProcessName());
-            if (fgNorm.Length > 0 &&
-                whitelist.Any(n => string.Equals(n, fgNorm, StringComparison.OrdinalIgnoreCase)))
-            {
-                _stickyWhitelistForeground = fgNorm;
-                return fgNorm;
-            }
-        }
-
-        // Activate often raises Z-order among listed TopMost panes without winning OS FG
-        // (browser focus lock). Follow the top-most listed window so Selected can switch
-        // Alpha → Beta after the harness raises the next pane.
+        // Activate/raise often changes Z-order among listed TopMost panes without winning
+        // OS FG (browser focus lock). Follow the top-most listed window so Selected can
+        // switch Alpha → Beta after another process raises the next pane.
         var topListed = _grabber.GetTopmostProcessAmong(whitelist);
         if (!string.IsNullOrEmpty(topListed))
         {
@@ -442,24 +422,6 @@ public sealed class CaptureMonitor : IDisposable
 
         // Outside the list and no sticky yet: deny Selected (caller keeps os FG name).
         return osForeground;
-    }
-
-    private void PulseForegroundPermissionOnUiThread()
-    {
-        if (_uiContext is null)
-        {
-            _grabber.PulseForegroundPermission();
-            return;
-        }
-
-        try
-        {
-            _uiContext.Send(_ => _grabber.PulseForegroundPermission(), null);
-        }
-        catch
-        {
-            _grabber.PulseForegroundPermission();
-        }
     }
 
     private CapturedFrame? Grab(AppConfig config)
