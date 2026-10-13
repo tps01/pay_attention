@@ -155,7 +155,7 @@ public partial class SettingsWindow : Window
             Text = "New trigger",
             Match = MatchMode.Contains,
             Action = CaptureAction.Screenshot,
-            OcrMode = OcrSpeedMode.Thorough,
+            OcrMode = OcrSpeedMode.Fast,
             Enabled = true
         });
     }

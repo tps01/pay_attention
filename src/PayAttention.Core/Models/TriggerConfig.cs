@@ -6,7 +6,7 @@ public sealed class TriggerConfig
     public string Text { get; set; } = string.Empty;
     public MatchMode Match { get; set; } = MatchMode.Contains;
     public CaptureAction Action { get; set; } = CaptureAction.Screenshot;
-    /// <summary>Thorough (default) or Fast for briefly visible text.</summary>
-    public OcrSpeedMode OcrMode { get; set; } = OcrSpeedMode.Thorough;
+    /// <summary>Fast (default) for briefly visible text, or Thorough for hard static text.</summary>
+    public OcrSpeedMode OcrMode { get; set; } = OcrSpeedMode.Fast;
     public bool Enabled { get; set; } = false;
 }

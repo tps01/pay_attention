@@ -104,8 +104,10 @@ pip install -r tests/requirements.txt
 pytest tests -q
 ```
 
-On-screen E2E (interactive session; keep harness uncovered):
+On-screen E2E (interactive session; keep harness uncovered). Pairwise matrix covers
+difficulty × scroll × speed × multi-pane × OCR × whitelist/blacklist (8 cases). Optional
+`test_screen_e2e_many.py` still stresses 50-trigger quiet behavior.
 
 ```powershell
-pytest tests/test_screen_e2e.py tests/test_screen_e2e_stream.py tests/test_screen_e2e_dmesg.py -q
+pytest tests/test_screen_e2e_pairwise.py tests/test_screen_e2e_many.py -q
 ```

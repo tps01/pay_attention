@@ -236,6 +236,77 @@ public sealed class ApplicationScopeTests
     }
 
     [Fact]
+    public void Whitelist_unmatched_foreground_denies_triggers()
+    {
+        var t1 = Guid.NewGuid();
+        var config = BaseConfig(ApplicationScopeMode.Whitelisted,
+        [
+            new ApplicationConfig
+            {
+                Enabled = true,
+                ProcessName = "PaWhiteAlpha",
+                ListMode = ApplicationListMode.Whitelist,
+                TriggerFilter = ApplicationTriggerFilter.Selected,
+                TriggerIds = [t1]
+            }
+        ]);
+
+        Assert.False(ApplicationScopeEvaluator.IsTriggerAllowed(config, "PayAttention.Harness", t1));
+        Assert.False(ApplicationScopeEvaluator.IsTriggerAllowed(config, null, t1));
+        Assert.Null(ApplicationScopeEvaluator.FindRelevantRow(config, "PayAttention.Harness"));
+    }
+
+    [Fact]
+    public void Whitelist_Selected_follows_matching_foreground_app_only()
+    {
+        var alphaId = Guid.NewGuid();
+        var betaId = Guid.NewGuid();
+        var config = BaseConfig(ApplicationScopeMode.Whitelisted,
+        [
+            new ApplicationConfig
+            {
+                Enabled = true,
+                ProcessName = "PaWhiteAlpha",
+                ListMode = ApplicationListMode.Whitelist,
+                TriggerFilter = ApplicationTriggerFilter.Selected,
+                TriggerIds = [alphaId]
+            },
+            new ApplicationConfig
+            {
+                Enabled = true,
+                ProcessName = "PaWhiteBeta",
+                ListMode = ApplicationListMode.Whitelist,
+                TriggerFilter = ApplicationTriggerFilter.Selected,
+                TriggerIds = [betaId]
+            }
+        ]);
+
+        Assert.True(ApplicationScopeEvaluator.IsTriggerAllowed(config, "PaWhiteBeta", betaId));
+        Assert.False(ApplicationScopeEvaluator.IsTriggerAllowed(config, "PaWhiteBeta", alphaId));
+        Assert.True(ApplicationScopeEvaluator.IsTriggerAllowed(config, "PaWhiteAlpha", alphaId));
+        Assert.False(ApplicationScopeEvaluator.IsTriggerAllowed(config, "PaWhiteAlpha", betaId));
+    }
+
+    [Fact]
+    public void Whitelist_unmatched_foreground_uses_global_debounce()
+    {
+        var config = BaseConfig(ApplicationScopeMode.Whitelisted,
+        [
+            new ApplicationConfig
+            {
+                Enabled = true,
+                ProcessName = "PaWhiteAlpha",
+                ListMode = ApplicationListMode.Whitelist,
+                DebounceSeconds = 12
+            }
+        ]);
+        config.DebounceSeconds = 30;
+
+        Assert.Equal(12, ApplicationScopeEvaluator.GetEffectiveDebounceSeconds(config, "PaWhiteAlpha"));
+        Assert.Equal(30, ApplicationScopeEvaluator.GetEffectiveDebounceSeconds(config, "other"));
+    }
+
+    [Fact]
     public void Effective_debounce_uses_matching_application_row()
     {
         var config = BaseConfig(ApplicationScopeMode.AllMinusBlacklisted,

@@ -1,9 +1,8 @@
-"""End-to-end: fast dmesg/MCE stream (MobaXterm-style colors); screenshot + recording + latency."""
+"""End-to-end: 50 triggers, one on-screen match at first / mid / last list position."""
 
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -13,7 +12,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HARNESS_PROJECT = REPO_ROOT / "tests" / "PayAttention.Harness" / "PayAttention.Harness.csproj"
-LATENCY_BUDGET_MS = 15_000
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32" or shutil.which("dotnet") is None,
@@ -21,16 +19,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _parse_latency(stdout: str, kind: str) -> int:
-    matches = re.findall(rf"LATENCY {kind}=(\d+)ms", stdout)
-    assert matches, f"missing LATENCY {kind}=…ms in output:\n{stdout}"
-    return int(matches[-1])
-
-
-def test_dmesg_mce_stream_screenshot_recording_and_latency():
+@pytest.mark.parametrize("slot", ["first", "mid", "last"])
+def test_many_triggers_one_match_by_list_position(slot: str):
     """
-    Fast-flowing white/red dmesg; MCE scrolls through mid-stream (no pause).
-    Single trigger phrase: RIP !INEXACT! (screenshot + record).
+    Hard fixture with zX9mQ2kP on screen. Config has 50 Screenshot triggers; only
+    that phrase is real. Slot places it first, 25th, or last in the list.
     """
     cmd = [
         "dotnet",
@@ -40,8 +33,9 @@ def test_dmesg_mce_stream_screenshot_recording_and_latency():
         "-c",
         "Release",
         "--",
-        "dmesg",
-        "120",
+        "many",
+        slot,
+        "90",
     ]
     result = subprocess.run(
         cmd,
@@ -56,9 +50,4 @@ def test_dmesg_mce_stream_screenshot_recording_and_latency():
     assert result.returncode == 0, output
     assert "PASS" in result.stdout
     assert "screenshot:" in result.stdout.lower()
-    assert "recording:" in result.stdout.lower()
-
-    shot_ms = _parse_latency(result.stdout, "shot")
-    rec_ms = _parse_latency(result.stdout, "rec")
-    assert shot_ms <= LATENCY_BUDGET_MS, f"shot latency {shot_ms}ms > {LATENCY_BUDGET_MS}ms\n{output}"
-    assert rec_ms <= LATENCY_BUDGET_MS, f"rec latency {rec_ms}ms > {LATENCY_BUDGET_MS}ms\n{output}"
+    assert f"Real trigger slot: {slot}" in result.stdout
