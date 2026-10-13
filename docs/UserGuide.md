@@ -49,7 +49,7 @@ The Triggers and Applications sections in Settings can be collapsed (click the s
 | **Thorough** (default) | Text stays on screen (logs, dialogs, dashboards) or is small / low-contrast / oddly punctuated | Runs more OCR passes (slower per frame, higher chance of a match) |
 | **Fast** | Text appears only briefly (fast-scrolling consoles, kernel dumps, flashing status lines) | Prefers fresh screen samples over exhausting every OCR fallback on one frame |
 
-Use **Fast** for lines you expect to scroll away in about a second. Use **Thorough** for hard-to-read tokens that stay visible. You can mix modes across triggers: while only **Fast** triggers remain unmatched, OCR spends less time on fallbacks so fresh frames win; **Thorough** triggers keep the deeper multi-pass search (and will re-scan a static screen until they match).
+Use **Fast** for lines you expect to scroll away in about a second. Use **Thorough** for hard-to-read tokens that stay visible. You can mix modes across triggers: while only **Fast** triggers remain unmatched, OCR spends less time on fallbacks so fresh frames win; **Thorough** triggers keep the deeper multi-pass search. Each matching row still fires, including two rows that share a phrase but use different actions (Screenshot and Record). A hit is saved as soon as its pass matches, without waiting for later passes that are still looking for other triggers. After a finished search that already matched something, a static scene stays quiet instead of re-scanning for triggers that are not on screen. A total miss is tried again.
 
 Pair **Fast** with a shorter **OCR interval** (about 250–500 ms) when catching flash-by text.
 

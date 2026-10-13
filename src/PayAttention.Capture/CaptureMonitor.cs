@@ -281,42 +281,65 @@ public sealed class CaptureMonitor : IDisposable
                 var recordFramesAtDequeue = _ringBuffer.Snapshot();
                 var sequenceFramesAtDequeue = _sequenceRing.Snapshot();
 
-                // Live pending count: capture keeps enqueueing while OCR runs. A snapshot at
-                // start would miss backlog that arrives mid-cascade (stream shot→REC inject).
-                var ocr = await RecognizeFrameAsync(config, captured, token, () => queue.PendingCount)
-                    .ConfigureAwait(false);
-                var text = ocr.Text;
                 var foregroundProcess = queued.ForegroundProcess;
-                var matches = TriggerMatcher.FindMatches(text, config.Triggers, config.FastMatchThresholdPercent)
-                    .Where(m => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, m.Trigger.Id))
-                    .ToList();
-
-                var debounceSeconds = ApplicationScopeEvaluator.GetEffectiveDebounceSeconds(config, foregroundProcess);
-                foreach (var match in matches)
+                var published = new HashSet<Guid>();
+                void PublishMatches(string ocrText)
                 {
-                    var key = $"{match.Trigger.Id}:{match.MatchedPortion}";
-                    if (_fireGate.ShouldFire(key, TimeSpan.FromSeconds(debounceSeconds), queued.Fingerprint))
+                    var found = TriggerMatcher.FindMatches(ocrText, config.Triggers, config.FastMatchThresholdPercent)
+                        .Where(m => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, m.Trigger.Id))
+                        .ToList();
+                    var debounce = TimeSpan.FromSeconds(
+                        ApplicationScopeEvaluator.GetEffectiveDebounceSeconds(config, foregroundProcess));
+                    var fires = TriggerFireCoalescer.SelectFires(found, match =>
                     {
-                        _logger.Debug($"Trigger '{match.Trigger.Text}' accepted (matched '{match.MatchedPortion}').");
+                        if (!published.Add(match.Trigger.Id))
+                            return false;
+
+                        var key = $"{match.Trigger.Id}:{match.MatchedPortion}";
+                        if (_fireGate.ShouldFire(key, debounce, queued.Fingerprint))
+                        {
+                            _logger.Debug($"Trigger '{match.Trigger.Text}' accepted (matched '{match.MatchedPortion}').");
+                            return true;
+                        }
+
+                        _logger.Debug($"Trigger '{match.Trigger.Text}' suppressed (debounce or unchanged scene).");
+                        return false;
+                    });
+
+                    foreach (var match in fires)
+                    {
                         QueueCaptureWrite(
                             config,
                             captured,
                             match,
-                            text,
+                            ocrText,
                             recordFramesAtDequeue,
                             sequenceFramesAtDequeue);
                     }
-                    else
-                    {
-                        _logger.Debug($"Trigger '{match.Trigger.Text}' suppressed (debounce or unchanged scene).");
-                    }
                 }
 
-                // After a miss, resample static scenes. If we cut short and newer frames are
-                // already waiting, drain those first — but once the queue is empty we must
-                // clear the fingerprint or a static fixture (hard e2e) stalls forever.
-                if (!AllEnabledMatched(text, config) &&
-                    (!ocr.CutShortForBacklog || queue.PendingCount == 0))
+                // Live pending count: capture keeps enqueueing while OCR runs. A snapshot at
+                // start would miss backlog that arrives mid-cascade (stream shot→REC inject).
+                // Publish as soon as a pass matches so a hit is not stuck behind later passes
+                // that are still looking for other triggers.
+                var ocr = await RecognizeFrameAsync(
+                        config,
+                        captured,
+                        token,
+                        () => queue.PendingCount,
+                        PublishMatches)
+                    .ConfigureAwait(false);
+                var text = ocr.Text;
+                PublishMatches(text);
+
+                // Total miss, or a search cut short with an idle queue: sample the static scene
+                // again. A finished search that already matched stays quiet so absent triggers
+                // in a long list do not re-OCR forever.
+                if (OcrCascadePolicy.ShouldResample(
+                        AllEnabledMatched(text, config),
+                        OcrCascadePolicy.AnyEnabledMatched(text, config),
+                        ocr.CutShortForBacklog,
+                        queue.PendingCount))
                     queue.AllowResample();
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -374,7 +397,8 @@ public sealed class CaptureMonitor : IDisposable
         AppConfig config,
         CapturedFrame frame,
         CancellationToken token,
-        Func<int>? pendingBehind = null)
+        Func<int>? pendingBehind = null,
+        Action<string>? onText = null)
     {
         pendingBehind ??= static () => 0;
         var cascadeClock = Stopwatch.StartNew();
@@ -407,7 +431,7 @@ public sealed class CaptureMonitor : IDisposable
                     if (slice is null)
                         continue;
 
-                    var part = await RecognizeBitmapMultiPassAsync(slice, monitorCascade, token)
+                    var part = await RecognizeBitmapMultiPassAsync(slice, monitorCascade, token, onText)
                         .ConfigureAwait(false);
                     parts.Add(part.Text);
                     cutShort |= part.CutShortForBacklog;
@@ -421,13 +445,14 @@ public sealed class CaptureMonitor : IDisposable
             }
         }
 
-        return await RecognizeBitmapMultiPassAsync(frame.Bitmap, cascade, token).ConfigureAwait(false);
+        return await RecognizeBitmapMultiPassAsync(frame.Bitmap, cascade, token, onText).ConfigureAwait(false);
     }
 
     private async Task<OcrFrameResult> RecognizeBitmapMultiPassAsync(
         Bitmap bitmap,
         CascadeContext cascade,
-        CancellationToken token)
+        CancellationToken token,
+        Action<string>? onText = null)
     {
         var chunks = new List<string>(8);
         var config = cascade.Config;
@@ -451,7 +476,7 @@ public sealed class CaptureMonitor : IDisposable
                 .ConfigureAwait(false);
         }
 
-        var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+        var joined = Report(chunks, onText);
         if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
             return new OcrFrameResult(joined, false);
         if (IsCascadeOverBudget(joined, cascade))
@@ -459,14 +484,14 @@ public sealed class CaptureMonitor : IDisposable
 
         // Only when triggers are still missing: crop neon-terminal ROIs and re-OCR hard.
         await RecognizeTerminalRegionsAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
-        joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+        joined = Report(chunks, onText);
         if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
             return new OcrFrameResult(joined, false);
         if (IsCascadeOverBudget(joined, cascade))
             return new OcrFrameResult(joined, true);
 
         await RecognizeTilesAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
-        joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+        joined = Report(chunks, onText);
         if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
             return new OcrFrameResult(joined, false);
         if (IsCascadeOverBudget(joined, cascade))
@@ -474,10 +499,17 @@ public sealed class CaptureMonitor : IDisposable
 
         // Dense terminal lines: OCR overlapping horizontal bands at high upscale.
         await RecognizeHorizontalBandsAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
-        joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+        joined = Report(chunks, onText);
         if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
             return new OcrFrameResult(joined, false);
         return new OcrFrameResult(joined, IsCascadeOverBudget(joined, cascade));
+    }
+
+    private static string Report(List<string> chunks, Action<string>? onText)
+    {
+        var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
+        onText?.Invoke(joined);
+        return joined;
     }
 
     private readonly struct CascadeContext
@@ -505,19 +537,10 @@ public sealed class CaptureMonitor : IDisposable
     /// Stop when every enabled trigger matched (screenshot+record with the same text still stop together).
     /// </summary>
     private static bool AllEnabledMatched(string text, AppConfig config) =>
-        AllEnabledMatched(text, config, config.FastMatchThresholdPercent);
+        OcrCascadePolicy.AllEnabledMatched(text, config);
 
-    private static bool AllEnabledMatched(string text, AppConfig config, int fastMatchThresholdPercent)
-    {
-        var enabled = EnabledTriggers(config).ToList();
-        if (enabled.Count == 0)
-            return true;
-
-        var matchedIds = TriggerMatcher.FindMatches(text, config.Triggers, fastMatchThresholdPercent)
-            .Select(m => m.Trigger.Id)
-            .ToHashSet();
-        return enabled.All(t => matchedIds.Contains(t.Id));
-    }
+    private static bool AllEnabledMatched(string text, AppConfig config, int fastMatchThresholdPercent) =>
+        OcrCascadePolicy.AllEnabledMatched(text, config, fastMatchThresholdPercent);
 
     /// <summary>
     /// When newer frames are already queued, cut the cascade short so OCR can catch up
