@@ -71,6 +71,18 @@ public enum ApplicationTriggerFilter
     None = 2
 }
 
+/// <summary>
+/// Per-application OCR prep pass override. Inherit uses the global Advanced toggle;
+/// Auto samples the app’s colors to pick On/Off.
+/// </summary>
+public enum OcrPrepOverride
+{
+    Inherit = 0,
+    Off = 1,
+    On = 2,
+    Auto = 3
+}
+
 /// <summary>Minimum severity written to app log files.</summary>
 public enum LogLevel
 {

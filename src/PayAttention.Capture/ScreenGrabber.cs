@@ -90,6 +90,12 @@ public static class ScreenGrabber
     public static string? GetForegroundProcessName()
     {
         var hwnd = NativeMethods.GetForegroundWindow();
+        return GetProcessNameForWindow(hwnd);
+    }
+
+    /// <summary>Normalized process name for a window HWND, or null if unavailable.</summary>
+    public static string? GetProcessNameForWindow(IntPtr hwnd)
+    {
         if (hwnd == IntPtr.Zero)
             return null;
 

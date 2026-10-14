@@ -151,8 +151,26 @@
                         </DataTemplate>
                       </DataGridTemplateColumn.CellTemplate>
                     </DataGridTemplateColumn>
-                    <DataGridTextColumn Header="Debounce" Binding="{Binding DebounceSeconds, UpdateSourceTrigger=PropertyChanged}" Width="80" />
-                    <DataGridTemplateColumn Header="Triggers" Width="140">
+                    <DataGridTextColumn Header="Debounce" Binding="{Binding DebounceSeconds, UpdateSourceTrigger=PropertyChanged}" Width="70" />
+                    <DataGridTemplateColumn Header="Prep" Width="120">
+                      <DataGridTemplateColumn.HeaderStyle>
+                        <Style TargetType="DataGridColumnHeader">
+                          <Setter Property="ToolTip"
+                                  Value="Per-app OCR prep overrides (Inherit / Off / On / Auto) for adaptive, neon, gray, invert, and terminal passes." />
+                        </Style>
+                      </DataGridTemplateColumn.HeaderStyle>
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                          <DockPanel LastChildFill="True"
+                                     ToolTip="Per-app OCR prep (Inherit / Off / On / Auto). Edit to override global Advanced passes for this process.">
+                            <Button DockPanel.Dock="Right" Content="Edit…" Margin="6,0,0,0" Padding="6,2"
+                                    Click="EditApplicationOcrPrep_Click" Tag="{Binding}" />
+                            <TextBlock Text="{Binding OcrPrepSummary}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                          </DockPanel>
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Header="Triggers" Width="120">
                       <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                           <ComboBox SelectedItem="{Binding TriggerFilter, UpdateSourceTrigger=PropertyChanged}"
