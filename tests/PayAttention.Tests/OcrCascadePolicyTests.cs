@@ -138,11 +138,17 @@ public class OcrCascadePolicyTests
     }
 
     [Fact]
-    public void ShouldResample_retries_when_cut_short_and_the_queue_is_idle()
+    public void ShouldResample_does_not_spin_when_cut_short_and_the_queue_is_idle()
     {
-        Assert.True(OcrCascadePolicy.ShouldResample(
+        // Caller schedules a delayed resample instead of AllowResample forever.
+        Assert.False(OcrCascadePolicy.ShouldResample(
             allEnabledMatched: false,
             anyEnabledMatched: false,
+            cutShortForBacklog: true,
+            pendingBehind: 0));
+        Assert.False(OcrCascadePolicy.ShouldResample(
+            allEnabledMatched: false,
+            anyEnabledMatched: true,
             cutShortForBacklog: true,
             pendingBehind: 0));
     }
