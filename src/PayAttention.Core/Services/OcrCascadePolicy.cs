@@ -91,10 +91,12 @@ public static class OcrCascadePolicy
         !UnmatchedAreAllFast(matchedIds, config);
 
     /// <summary>
-    /// Retry a static scene only when this search did not already answer it.
+    /// Whether to allow an immediate resample of the same static scene.
     /// A finished search that matched something stays quiet, even if other triggers
     /// are absent — otherwise one hit among dozens re-OCRs forever.
-    /// A total miss, or a search cut short with nothing newer waiting, is tried again.
+    /// A finished total miss is tried again immediately.
+    /// A search cut short never allows immediately: with backlog, newer frames win;
+    /// with an idle queue, the caller schedules a delayed resample instead of spinning.
     /// </summary>
     public static bool ShouldResample(
         bool allEnabledMatched,
@@ -104,9 +106,12 @@ public static class OcrCascadePolicy
     {
         if (allEnabledMatched)
             return false;
-        if (cutShortForBacklog && pendingBehind > 0)
+        // Cut short: do not AllowResample. pendingBehind is reserved for callers/logging;
+        // both backlog and idle cut-shorts fall through to ScheduleResample when unmatched.
+        _ = pendingBehind;
+        if (cutShortForBacklog)
             return false;
-        if (!cutShortForBacklog && anyEnabledMatched)
+        if (anyEnabledMatched)
             return false;
         return true;
     }
