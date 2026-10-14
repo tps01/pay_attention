@@ -13,7 +13,7 @@ public class PerformanceProfilesTests
         bool neon) =>
         new(kind, medianMs, plain, neon);
 
-    private static IReadOnlyList<PerformanceProfiles.ProfileTrialResult> Ladder(
+    private static List<PerformanceProfiles.ProfileTrialResult> Ladder(
         (PerformanceProfileKind Kind, double Ms, bool Plain, bool Neon)[] rows) =>
         rows.Select(r => Trial(r.Kind, r.Ms, r.Plain, r.Neon)).ToList();
 
@@ -25,41 +25,57 @@ public class PerformanceProfilesTests
     }
 
     [Fact]
-    public void Select_stops_at_knee_when_richer_adds_no_quality()
+    public void Select_uses_headroom_on_fast_hardware_with_neon()
     {
-        // Very Low already reads both; richer rungs add nothing → Very Low.
+        // Neon verified on every rung; all finish under budget → richest (Ultra).
         var trials = Ladder(
         [
             (PerformanceProfileKind.VeryLow, 200, true, true),
             (PerformanceProfileKind.Low, 300, true, true),
             (PerformanceProfileKind.Balanced, 400, true, true),
             (PerformanceProfileKind.High, 500, true, true),
-            (PerformanceProfileKind.Ultra, 600, true, true)
+            (PerformanceProfileKind.Ultra, 400, true, true)
         ]);
 
         var chosen = PerformanceProfiles.Select(trials, out var reason);
-        Assert.Equal(PerformanceProfileKind.VeryLow, chosen);
-        Assert.Contains("Very Low", reason, StringComparison.Ordinal);
+        Assert.Equal(PerformanceProfileKind.Ultra, chosen);
+        Assert.Contains("Ultra", reason, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Select_ascends_until_neon_then_stops()
+    public void Select_caps_at_Balanced_when_neon_never_reads()
     {
-        // Plain-only until High gains neon; Ultra same quality → High.
+        // Plain-only on a fast PC: climb with headroom but do not enable High/Ultra neon blindly.
+        var trials = Ladder(
+        [
+            (PerformanceProfileKind.VeryLow, 50, true, false),
+            (PerformanceProfileKind.Low, 80, true, false),
+            (PerformanceProfileKind.Balanced, 120, true, false),
+            (PerformanceProfileKind.High, 150, true, false),
+            (PerformanceProfileKind.Ultra, 200, true, false)
+        ]);
+
+        Assert.Equal(PerformanceProfileKind.Balanced, PerformanceProfiles.Select(trials, out _));
+    }
+
+    [Fact]
+    public void Select_stops_at_richest_fitting_neon_rung()
+    {
+        // Neon only from High up; Ultra is too slow for its 500ms interval → High.
         var trials = Ladder(
         [
             (PerformanceProfileKind.VeryLow, 100, true, false),
             (PerformanceProfileKind.Low, 150, true, false),
             (PerformanceProfileKind.Balanced, 200, true, false),
             (PerformanceProfileKind.High, 300, true, true),
-            (PerformanceProfileKind.Ultra, 450, true, true)
+            (PerformanceProfileKind.Ultra, 900, true, true)
         ]);
 
         Assert.Equal(PerformanceProfileKind.High, PerformanceProfiles.Select(trials, out _));
     }
 
     [Fact]
-    public void Select_Ultra_when_only_Ultra_reads_neon()
+    public void Select_Ultra_when_only_Ultra_reads_neon_and_fits()
     {
         var trials = Ladder(
         [
@@ -74,15 +90,16 @@ public class PerformanceProfilesTests
     }
 
     [Fact]
-    public void Select_skips_miss_rungs_until_plain_appears()
+    public void Select_falls_back_to_plain_tier_when_neon_rung_is_too_slow()
     {
+        // Only Ultra reads neon but 1200ms > 1×500 → fall back to richest plain that fits (High).
         var trials = Ladder(
         [
             (PerformanceProfileKind.VeryLow, 50, false, false),
             (PerformanceProfileKind.Low, 80, false, false),
             (PerformanceProfileKind.Balanced, 120, true, false),
-            (PerformanceProfileKind.High, 200, true, true),
-            (PerformanceProfileKind.Ultra, 350, true, true)
+            (PerformanceProfileKind.High, 200, true, false),
+            (PerformanceProfileKind.Ultra, 1200, true, true)
         ]);
 
         Assert.Equal(PerformanceProfileKind.High, PerformanceProfiles.Select(trials, out _));
@@ -106,19 +123,35 @@ public class PerformanceProfilesTests
     }
 
     [Fact]
-    public void Select_steps_down_when_knee_is_too_slow()
+    public void Select_steps_down_when_chosen_exceeds_ceiling()
     {
-        // High is the quality knee but 3× its 750ms interval → soft step toward Low/Balanced.
+        // High is the only neon fit under budget, but 1600ms > 2×750 ceiling → step to Balanced.
         var trials = Ladder(
         [
             (PerformanceProfileKind.VeryLow, 200, true, false),
             (PerformanceProfileKind.Low, 300, true, false),
             (PerformanceProfileKind.Balanced, 400, true, true),
-            (PerformanceProfileKind.High, 3000, true, true),
+            (PerformanceProfileKind.High, 1600, true, true),
             (PerformanceProfileKind.Ultra, 4000, true, true)
         ]);
 
-        // High improves to neon (q=2) then Ultra plateaus → knee High, but 3000 > 2*750 → step to Balanced (400 <= 2*900).
+        // High neon is over budget (1600 > 750) so q=2 pick is Balanced (400 <= 900).
+        Assert.Equal(PerformanceProfileKind.Balanced, PerformanceProfiles.Select(trials, out _));
+    }
+
+    [Fact]
+    public void Select_Balanced_when_richer_rungs_over_budget()
+    {
+        // Fast enough for Balanced, but High/Ultra exceed 1× their intervals.
+        var trials = Ladder(
+        [
+            (PerformanceProfileKind.VeryLow, 200, true, true),
+            (PerformanceProfileKind.Low, 400, true, true),
+            (PerformanceProfileKind.Balanced, 700, true, true),
+            (PerformanceProfileKind.High, 900, true, true),
+            (PerformanceProfileKind.Ultra, 800, true, true)
+        ]);
+
         Assert.Equal(PerformanceProfileKind.Balanced, PerformanceProfiles.Select(trials, out _));
     }
 
@@ -162,6 +195,14 @@ public class PerformanceProfilesTests
         Assert.False(config.OcrEnableTerminal);
         Assert.Equal(0, config.OcrTerminalMaxRegions);
         Assert.True(config.UseBackgroundPriority);
+    }
+
+    [Fact]
+    public void Apply_High_enables_neon()
+    {
+        var config = new AppConfig();
+        PerformanceProfiles.Apply(config, PerformanceProfileKind.High);
+        Assert.True(config.OcrEnableNeon);
     }
 
     [Fact]

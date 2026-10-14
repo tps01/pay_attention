@@ -101,7 +101,7 @@ public static class PerformanceProfiles
         OcrBoostUpscalePercent: 150,
         OcrAbsoluteMaxWidth: 1920,
         OcrEnableAdaptive: true,
-        OcrEnableNeon: false,
+        OcrEnableNeon: true,
         OcrEnableTerminal: true,
         OcrTerminalMaxRegions: 2,
         OcrMaxWindows: 4,
@@ -186,8 +186,21 @@ public static class PerformanceProfiles
     }
 
     /// <summary>
-    /// P1dB-style: among all rungs, take the leanest that achieves the best quality score
-    /// (0 miss / 1 plain / 2 plain+neon). Then soft step-down if MedianMs &gt; 2× interval.
+    /// Cascade may use up to this fraction of the profile's OCR interval and still "fit".
+    /// Rungs that finish within budget are preferred over leaner ones on fast hardware.
+    /// </summary>
+    public const double InteractiveLoadBudget = 1.0;
+
+    /// <summary>
+    /// Hard ceiling: never keep a rung whose median cascade exceeds this multiple of its interval.
+    /// </summary>
+    public const double InteractiveLoadCeiling = 2.0;
+
+    /// <summary>
+    /// Hardware-aware pick: prefer the richest rung that still hits the best quality score
+    /// (0 miss / 1 plain / 2 plain+neon) while MedianMs ≤ <see cref="InteractiveLoadBudget"/>×
+    /// interval. If nothing fits at that quality, try the next-lower quality tier. Finally
+    /// soft step-down while MedianMs &gt; <see cref="InteractiveLoadCeiling"/>× interval.
     /// </summary>
     public static PerformanceProfileKind Select(
         IReadOnlyList<ProfileTrialResult> trials,
@@ -211,44 +224,76 @@ public static class PerformanceProfiles
             return PerformanceProfileKind.VeryLow;
         }
 
-        // Leanest rung that still hits max quality (knee / diminishing returns).
-        var chosen = PerformanceProfileKind.VeryLow;
+        PerformanceProfileKind? chosen = null;
         ProfileTrialResult? chosenTrial = null;
-        foreach (var def in All)
+
+        // Without a verified neon read, do not climb into High/Ultra just because the PC is fast —
+        // those rungs buy neon/terminal work the calibration never confirmed. Cap at Balanced.
+        var richCapIndex = maxQuality >= 2
+            ? All.Count - 1
+            : IndexOf(PerformanceProfileKind.Balanced);
+
+        // Highest quality first; within a tier, richest rung (up to the cap) that still fits.
+        for (var q = maxQuality; q >= 1 && chosen is null; q--)
         {
-            var trial = Find(def.Kind);
-            if (trial is null)
-                continue;
-            if (QualityScore(trial) < maxQuality)
-                continue;
-            chosen = def.Kind;
-            chosenTrial = trial;
-            break;
+            for (var i = richCapIndex; i >= 0; i--)
+            {
+                var def = All[i];
+                var trial = Find(def.Kind);
+                if (trial is null || QualityScore(trial) < q)
+                    continue;
+                if (trial.MedianMs > InteractiveLoadBudget * def.OcrIntervalMs)
+                    continue;
+
+                chosen = def.Kind;
+                chosenTrial = trial;
+                break;
+            }
         }
 
-        // Soft interactivity: step down while cascade is more than 2× the profile interval.
+        // Nothing fit the budget — take the leanest rung that still has max quality.
+        if (chosen is null)
+        {
+            foreach (var def in All)
+            {
+                var trial = Find(def.Kind);
+                if (trial is null || QualityScore(trial) < maxQuality)
+                    continue;
+                chosen = def.Kind;
+                chosenTrial = trial;
+                break;
+            }
+        }
+
+        chosen ??= PerformanceProfileKind.VeryLow;
+
+        // Soft interactivity ceiling: step down while cascade is more than 2× the interval.
         while (chosen != PerformanceProfileKind.VeryLow && chosenTrial is not null)
         {
-            var def = Get(chosen);
-            if (chosenTrial.MedianMs <= 2.0 * def.OcrIntervalMs)
+            var def = Get(chosen.Value);
+            if (chosenTrial.MedianMs <= InteractiveLoadCeiling * def.OcrIntervalMs)
                 break;
 
-            var idx = IndexOf(chosen);
+            var idx = IndexOf(chosen.Value);
             if (idx <= 0)
                 break;
 
             chosen = All[idx - 1].Kind;
-            chosenTrial = Find(chosen);
+            chosenTrial = Find(chosen.Value);
             if (chosenTrial is null)
                 break;
         }
 
-        var name = DisplayName(chosen);
+        var picked = chosen.Value;
+        var name = DisplayName(picked);
         var ms = chosenTrial?.MedianMs ?? 0;
         var qFinal = chosenTrial is null ? maxQuality : QualityScore(chosenTrial);
         var neon = chosenTrial?.NeonRead == true ? "neon read" : "neon missed";
-        reason = $"{name}: quality {qFinal}, {ms:0}ms ({neon})";
-        return chosen;
+        var load = Get(picked).OcrIntervalMs <= 0
+            ? 0
+            : ms / Get(picked).OcrIntervalMs;
+        reason = $"{name}: quality {qFinal}, {ms:0}ms ({neon}, {load:0.00}× interval)";
+        return picked;
     }
 
     private static int IndexOf(PerformanceProfileKind kind)

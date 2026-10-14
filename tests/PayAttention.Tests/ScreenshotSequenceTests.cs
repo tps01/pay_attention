@@ -16,7 +16,6 @@ public sealed class ScreenshotSequenceTests
         try
         {
             var triggerTime = DateTimeOffset.Now;
-            var writer = new CaptureWriter();
             var sidecar = new CaptureSidecar
             {
                 Timestamp = triggerTime,
@@ -36,7 +35,7 @@ public sealed class ScreenshotSequenceTests
                 MakeFrame(triggerBmp, triggerTime.AddSeconds(-3))
             };
 
-            var folder = writer.WriteScreenshotSequence(
+            var folder = CaptureWriter.WriteScreenshotSequence(
                 pre,
                 triggerBmp,
                 sidecar,
@@ -55,7 +54,7 @@ public sealed class ScreenshotSequenceTests
             Assert.Contains("t+000.jpg", files);
             Assert.Contains("sidecar.json", files);
 
-            writer.WriteSequenceStill(
+            CaptureWriter.WriteSequenceStill(
                 folder,
                 triggerTime,
                 triggerTime.AddSeconds(3),

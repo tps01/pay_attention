@@ -57,7 +57,9 @@ public sealed class ConfigService
             string? backup = null;
             try
             {
-                backup = ConfigPath + ".corrupt." + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+                backup = ConfigPath + ".corrupt." + DateTime.UtcNow.ToString(
+                    "yyyyMMddHHmmss",
+                    System.Globalization.CultureInfo.InvariantCulture);
                 File.Copy(ConfigPath, backup, overwrite: true);
             }
             catch

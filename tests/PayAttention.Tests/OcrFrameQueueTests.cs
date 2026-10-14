@@ -32,9 +32,11 @@ public sealed class OcrFrameQueueTests
             ScreenBounds = new Rectangle(0, 0, 64, 64)
         };
 
-        Assert.True(queue.TryEnqueueIfChanged(frame1, "PaWhiteAlpha"));
-        Assert.False(queue.TryEnqueueIfChanged(frame2, "PaWhiteAlpha"));
-        Assert.True(queue.TryEnqueueIfChanged(frame2, "PaWhiteBeta"));
+        var fp1 = FrameFingerprint.ComputeAverageHash(frame1.Bitmap);
+        var fp2 = FrameFingerprint.ComputeAverageHash(frame2.Bitmap);
+        Assert.True(queue.TryEnqueueIfChanged(frame1, "PaWhiteAlpha", fp1));
+        Assert.False(queue.TryEnqueueIfChanged(frame2, "PaWhiteAlpha", fp2));
+        Assert.True(queue.TryEnqueueIfChanged(frame2, "PaWhiteBeta", fp2));
     }
 
     [Fact]
@@ -54,10 +56,11 @@ public sealed class OcrFrameQueueTests
             ScreenBounds = new Rectangle(0, 0, 32, 32)
         };
 
-        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha"));
-        Assert.False(queue.TryEnqueueIfChanged(frame, "alpha"));
+        var fp = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
+        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha", fp));
+        Assert.False(queue.TryEnqueueIfChanged(frame, "alpha", fp));
         queue.AllowResample();
-        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha"));
+        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha", fp));
     }
 
     [Fact]
@@ -65,14 +68,15 @@ public sealed class OcrFrameQueueTests
     {
         using var queue = new OcrFrameQueue(capacity: 4);
         using var frame = MakeSolidFrame(Color.Navy);
+        var fp = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
 
-        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha", out var first));
+        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha", fp, out var first));
         Assert.Equal(OcrEnqueueDecision.Enqueued, first);
-        Assert.False(queue.TryEnqueueIfChanged(frame, "alpha", out var skipped));
+        Assert.False(queue.TryEnqueueIfChanged(frame, "alpha", fp, out var skipped));
         Assert.Equal(OcrEnqueueDecision.SkippedUnchanged, skipped);
 
         queue.ScheduleResample(TimeSpan.Zero);
-        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha", out var forced));
+        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha", fp, out var forced));
         Assert.Equal(OcrEnqueueDecision.EnqueuedForcedResample, forced);
     }
 
@@ -81,13 +85,14 @@ public sealed class OcrFrameQueueTests
     {
         using var queue = new OcrFrameQueue(capacity: 4);
         using var frame = MakeSolidFrame(Color.Teal);
+        var fp = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
 
-        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha"));
-        Assert.False(queue.TryEnqueueIfChanged(frame, "alpha"));
+        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha", fp));
+        Assert.False(queue.TryEnqueueIfChanged(frame, "alpha", fp));
 
         queue.ScheduleResample(TimeSpan.FromHours(1));
         queue.ScheduleResample(TimeSpan.Zero);
-        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha", out var forced));
+        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha", fp, out var forced));
         Assert.Equal(OcrEnqueueDecision.EnqueuedForcedResample, forced);
     }
 
@@ -96,10 +101,11 @@ public sealed class OcrFrameQueueTests
     {
         using var queue = new OcrFrameQueue(capacity: 4);
         using var frame = MakeSolidFrame(Color.Maroon);
+        var fp = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
 
-        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha"));
+        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha", fp));
         queue.ScheduleResample(TimeSpan.FromMinutes(5));
-        Assert.False(queue.TryEnqueueIfChanged(frame, "alpha", out var skipped));
+        Assert.False(queue.TryEnqueueIfChanged(frame, "alpha", fp, out var skipped));
         Assert.Equal(OcrEnqueueDecision.SkippedUnchanged, skipped);
     }
 

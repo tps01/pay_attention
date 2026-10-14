@@ -17,9 +17,9 @@ public sealed class CapturedFrame : IDisposable
     public void Dispose() => Bitmap.Dispose();
 }
 
-public sealed class ScreenGrabber
+public static class ScreenGrabber
 {
-    public IReadOnlyList<MonitorInfo> GetMonitors()
+    public static IReadOnlyList<MonitorInfo> GetMonitors()
     {
         return System.Windows.Forms.Screen.AllScreens
             .Select((s, i) => new MonitorInfo
@@ -32,14 +32,14 @@ public sealed class ScreenGrabber
             .ToList();
     }
 
-    public CapturedFrame CapturePrimary()
+    public static CapturedFrame CapturePrimary()
     {
         var screen = System.Windows.Forms.Screen.PrimaryScreen
             ?? System.Windows.Forms.Screen.AllScreens[0];
         return CaptureBounds(screen.Bounds, 0, screen.DeviceName);
     }
 
-    public CapturedFrame CaptureMonitor(int index)
+    public static CapturedFrame CaptureMonitor(int index)
     {
         var screens = System.Windows.Forms.Screen.AllScreens;
         if (index < 0 || index >= screens.Length)
@@ -48,7 +48,7 @@ public sealed class ScreenGrabber
         return CaptureBounds(screen.Bounds, index, screen.DeviceName);
     }
 
-    public CapturedFrame CaptureVirtualDesktop()
+    public static CapturedFrame CaptureVirtualDesktop()
     {
         var bounds = System.Windows.Forms.SystemInformation.VirtualScreen;
         return CaptureBounds(bounds, -1, "AllMonitors");
@@ -57,7 +57,7 @@ public sealed class ScreenGrabber
     /// <summary>
     /// Captures the foreground window. Returns null if unavailable / minimized / invalid.
     /// </summary>
-    public CapturedFrame? TryCaptureForegroundWindow()
+    public static CapturedFrame? TryCaptureForegroundWindow()
     {
         var hwnd = NativeMethods.GetForegroundWindow();
         if (hwnd == IntPtr.Zero)
@@ -87,13 +87,13 @@ public sealed class ScreenGrabber
         return CaptureBounds(bounds, index, "ForegroundWindow");
     }
 
-    public string? GetForegroundProcessName()
+    public static string? GetForegroundProcessName()
     {
         var hwnd = NativeMethods.GetForegroundWindow();
         if (hwnd == IntPtr.Zero)
             return null;
 
-        NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+        _ = NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
         if (pid == 0)
             return null;
 
@@ -112,7 +112,7 @@ public sealed class ScreenGrabber
     /// Top-most visible window (Z-order) whose process is in <paramref name="processNames"/>.
     /// Used when OS FG is outside the whitelist but Activate/raise changed Z-order among listed apps.
     /// </summary>
-    public string? GetTopmostProcessAmong(IEnumerable<string> processNames)
+    public static string? GetTopmostProcessAmong(IEnumerable<string> processNames)
     {
         var targets = processNames
             .Select(ApplicationScopeEvaluator.NormalizeProcessName)
@@ -126,7 +126,10 @@ public sealed class ScreenGrabber
         {
             if (!NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd))
                 return true;
+            // Thread id unused; pid is what we need.
+#pragma warning disable CA1806
             NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+#pragma warning restore CA1806
             if (pid == 0)
                 return true;
             try
@@ -149,7 +152,7 @@ public sealed class ScreenGrabber
         return found;
     }
 
-    public IReadOnlyList<string> GetRunningProcessNames()
+    public static IReadOnlyList<string> GetRunningProcessNames()
     {
         return Process.GetProcesses()
             .Select(p =>
@@ -177,7 +180,7 @@ public sealed class ScreenGrabber
     /// True if any of the given process names has at least one running instance.
     /// Uses GetProcessesByName (cheap for a small whitelist) rather than enumerating all processes.
     /// </summary>
-    public bool AnyNamedProcessRunning(IEnumerable<string> processNames)
+    public static bool AnyNamedProcessRunning(IEnumerable<string> processNames)
     {
         foreach (var raw in processNames)
         {
@@ -215,7 +218,7 @@ public sealed class ScreenGrabber
     /// relative to the capture's screen coordinates.
     /// Returns how many window overlaps were painted (0 = nothing masked).
     /// </summary>
-    public int MaskProcessWindows(Bitmap bitmap, Rectangle screenBounds, IEnumerable<string> processNames)
+    public static int MaskProcessWindows(Bitmap bitmap, Rectangle screenBounds, IEnumerable<string> processNames)
     {
         var targets = processNames
             .Select(ApplicationScopeEvaluator.NormalizeProcessName)
@@ -251,7 +254,7 @@ public sealed class ScreenGrabber
     /// Visible top-level windows (Z-order top→bottom) for processes not in
     /// <paramref name="excludeProcessNames"/> (e.g. blacklist masks).
     /// </summary>
-    public IReadOnlyList<(IntPtr Hwnd, Rectangle Bounds)> GetVisibleProcessWindows(
+    public static IReadOnlyList<(IntPtr Hwnd, Rectangle Bounds)> GetVisibleProcessWindows(
         IEnumerable<string>? excludeProcessNames)
     {
         var exclude = (excludeProcessNames ?? [])
@@ -272,7 +275,9 @@ public sealed class ScreenGrabber
             if (windowBounds.Width < 8 || windowBounds.Height < 8)
                 return true;
 
+#pragma warning disable CA1806
             NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+#pragma warning restore CA1806
             if (pid == 0)
                 return true;
 
@@ -296,17 +301,10 @@ public sealed class ScreenGrabber
     }
 
     /// <summary>
-    /// Visible top-level window bounds in virtual-screen coordinates for processes
-    /// that are not in <paramref name="excludeProcessNames"/> (e.g. blacklist masks).
-    /// </summary>
-    public IReadOnlyList<Rectangle> GetVisibleProcessWindowBounds(IEnumerable<string>? excludeProcessNames) =>
-        GetVisibleProcessWindows(excludeProcessNames).Select(w => w.Bounds).ToList();
-
-    /// <summary>
     /// Captures a specific window by HWND via PrintWindow (correct under DPI;
     /// works while other apps remain focused if the target is TopMost).
     /// </summary>
-    public CapturedFrame? TryCaptureWindow(IntPtr hwnd)
+    public static CapturedFrame? TryCaptureWindow(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero || !NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd))
             return null;
@@ -353,7 +351,7 @@ public sealed class ScreenGrabber
     /// Captures visible top-level windows for the given process names via PrintWindow
     /// and composites them onto a black canvas (union bounds).
     /// </summary>
-    public CapturedFrame? TryCaptureProcessWindows(IEnumerable<string> processNames)
+    public static CapturedFrame? TryCaptureProcessWindows(IEnumerable<string> processNames)
     {
         var targets = processNames
             .Select(ApplicationScopeEvaluator.NormalizeProcessName)
@@ -395,44 +393,6 @@ public sealed class ScreenGrabber
         };
     }
 
-    /// <summary>
-    /// Keeps only top-level windows for the given process names; everything else becomes black.
-    /// Returns whether any whitelist window overlapped the capture.
-    /// </summary>
-    public bool MaskExceptProcessWindows(Bitmap bitmap, Rectangle screenBounds, IEnumerable<string> processNames)
-    {
-        var targets = processNames
-            .Select(ApplicationScopeEvaluator.NormalizeProcessName)
-            .Where(n => n.Length > 0)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (targets.Count == 0 || bitmap.Width < 1 || bitmap.Height < 1)
-            return false;
-
-        var absolute = CollectProcessWindowRectsAbsolute(targets);
-        var keep = new List<Rectangle>();
-        foreach (var windowBounds in absolute)
-        {
-            var overlap = Rectangle.Intersect(windowBounds, screenBounds);
-            if (overlap.Width < 1 || overlap.Height < 1)
-                continue;
-            keep.Add(new Rectangle(
-                overlap.X - screenBounds.X,
-                overlap.Y - screenBounds.Y,
-                overlap.Width,
-                overlap.Height));
-        }
-
-        using var original = (Bitmap)bitmap.Clone();
-        using var g = Graphics.FromImage(bitmap);
-        g.Clear(Color.Black);
-        if (keep.Count == 0)
-            return false;
-
-        foreach (var r in keep)
-            g.DrawImage(original, r, r, GraphicsUnit.Pixel);
-        return true;
-    }
-
     private static List<Rectangle> CollectProcessWindowRectsAbsolute(HashSet<string> processNames) =>
         CollectProcessWindows(processNames).Select(w => w.Bounds).ToList();
 
@@ -455,7 +415,9 @@ public sealed class ScreenGrabber
         // Top-level enum (normal apps).
         NativeMethods.EnumWindows((hwnd, _) =>
         {
+#pragma warning disable CA1806
             NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+#pragma warning restore CA1806
             if (pid == 0)
                 return true;
 

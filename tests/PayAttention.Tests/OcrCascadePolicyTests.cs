@@ -25,44 +25,76 @@ public class OcrCascadePolicyTests
     [Fact]
     public void AllEnabledMatched_false_when_only_one_of_many_hits()
     {
+        var beta = Trigger("beta");
         var config = ConfigWithTriggers(
             Trigger("alpha"),
-            Trigger("beta"),
+            beta,
             Trigger("gamma"));
+        var matched = new HashSet<Guid> { beta.Id };
 
-        Assert.True(OcrCascadePolicy.AnyEnabledMatched("noise beta noise", config));
-        Assert.False(OcrCascadePolicy.AllEnabledMatched("noise beta noise", config));
+        Assert.True(OcrCascadePolicy.AnyAllowedMatched(matched, config, foregroundProcess: null));
+        Assert.False(OcrCascadePolicy.AllEnabledMatched(matched, config));
     }
 
     [Fact]
     public void AllEnabledMatched_true_when_every_enabled_trigger_hits()
     {
-        var config = ConfigWithTriggers(
-            Trigger("alpha"),
-            Trigger("beta"));
+        var a = Trigger("alpha");
+        var b = Trigger("beta");
+        var config = ConfigWithTriggers(a, b);
 
-        Assert.True(OcrCascadePolicy.AllEnabledMatched("alpha and beta", config));
+        Assert.True(OcrCascadePolicy.AllEnabledMatched(new HashSet<Guid> { a.Id, b.Id }, config));
     }
 
     [Fact]
-    public void AnyEnabledMatched_false_on_total_miss()
+    public void AllowedMatched_false_on_total_miss()
     {
         var config = ConfigWithTriggers(
             Trigger("alpha"),
             Trigger("beta"));
+        var matched = new HashSet<Guid>();
 
-        Assert.False(OcrCascadePolicy.AnyEnabledMatched("nothing here", config));
-        Assert.False(OcrCascadePolicy.AllEnabledMatched("nothing here", config));
+        Assert.False(OcrCascadePolicy.AnyAllowedMatched(matched, config, foregroundProcess: null));
+        Assert.False(OcrCascadePolicy.AllAllowedMatched(matched, config, foregroundProcess: null));
+        Assert.False(OcrCascadePolicy.AllEnabledMatched(matched, config));
     }
 
     [Fact]
-    public void AnyEnabledMatched_true_when_no_enabled_triggers()
+    public void AllowedMatched_true_when_no_enabled_triggers()
     {
         var config = ConfigWithTriggers(
             new TriggerConfig { Text = "x", Enabled = false });
+        var matched = new HashSet<Guid>();
 
-        Assert.True(OcrCascadePolicy.AnyEnabledMatched("anything", config));
-        Assert.True(OcrCascadePolicy.AllEnabledMatched("anything", config));
+        Assert.True(OcrCascadePolicy.AnyAllowedMatched(matched, config, foregroundProcess: null));
+        Assert.True(OcrCascadePolicy.AllAllowedMatched(matched, config, foregroundProcess: null));
+        Assert.True(OcrCascadePolicy.AllEnabledMatched(matched, config));
+    }
+
+    [Fact]
+    public void AllAllowedMatched_ignores_triggers_not_allowed_for_foreground()
+    {
+        var alpha = Trigger("alpha");
+        var beta = Trigger("beta");
+        var config = ConfigWithTriggers(alpha, beta);
+        config.ApplicationScope = ApplicationScopeMode.Whitelisted;
+        config.Applications =
+        [
+            new ApplicationConfig
+            {
+                ProcessName = "notepad",
+                Enabled = true,
+                ListMode = ApplicationListMode.Whitelist,
+                TriggerFilter = ApplicationTriggerFilter.Selected,
+                TriggerIds = [alpha.Id]
+            }
+        ];
+
+        // Only alpha is allowed for notepad; beta matched-or-not must not block "all allowed".
+        Assert.True(OcrCascadePolicy.AllAllowedMatched(
+            new HashSet<Guid> { alpha.Id }, config, "notepad"));
+        Assert.False(OcrCascadePolicy.AllAllowedMatched(
+            new HashSet<Guid>(), config, "notepad"));
     }
 
     [Fact]

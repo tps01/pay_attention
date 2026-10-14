@@ -137,7 +137,7 @@ Change the capture folder in Settings. **Import…** / **Export…** copy settin
 3. Tray → **Open logs folder**  
 4. Attach the relevant `app-yyyyMMdd.log` file(s) (treat as sensitive — they can include OCR text)
 
-OCR max width / upscale / invert and the cascade knobs live under **Settings → Advanced**. Extra OCR passes for dark terminals run when those Advanced toggles are on (**Ultra** default). Saved captures stay full color.
+OCR max width / upscale / invert / grayscale and the cascade knobs live under **Settings → Advanced**. Use **Quality preset** to apply Very Low→Ultra in one step, or **Optimize for this PC** to time them. Extra OCR passes for dark terminals run when those Advanced toggles are on (**Ultra** default). Optional invert and grayscale passes are off unless you enable them. Saved captures stay full color.
 
 ### Optimize for this PC
 
@@ -145,7 +145,7 @@ Use this on the machine that will run Pay Attention (especially weaker corporate
 
 1. The app pauses monitoring if needed and shows two short test windows (plain black-on-white text and small neon-on-black text).
 2. Over about **10 seconds**, it times five profiles — **Very Low → Low → Balanced → High → Ultra** — three trials each, using this PC’s real screen capture and Windows OCR.
-3. It picks the **leanest** profile that still reaches the best recognition quality on those windows (plain and, if possible, neon). That is the quality knee: richer cascades that do not improve reads are discarded. If the knee is far slower than its OCR interval, it steps one rung leaner.
+3. It scores each profile on recognition quality (plain token, and neon when the cascade can read it) and cascade time vs that profile’s OCR interval. It prefers the **richest** profile that still hits the best quality while finishing within one interval. If neon never reads on any rung, it caps at **Balanced** so High/Ultra neon work is not enabled blindly. If the pick is still more than 2× its interval, it steps one rung leaner.
 4. Results fill the Advanced fields. Review them, then click **Save**. Nothing is written to disk until you save.
 
 | Profile | Typical use |

@@ -15,7 +15,9 @@ public sealed class AppConfig
     public ScreenshotFormat ScreenshotFormat { get; set; } = ScreenshotFormat.Jpeg;
     public int OcrMaxWidth { get; set; } = 1920;
     public CaptureScope CaptureScope { get; set; } = CaptureScope.Monitor;
-    public bool OcrInvertColors { get; set; } = false;
+    public bool OcrInvertColors { get; set; }
+    /// <summary>Optional plain luma grayscale OCR pass (no contrast stretch).</summary>
+    public bool OcrEnableGray { get; set; }
     public int OcrUpscalePercent { get; set; } = 100;
     /// <summary>Floor for adaptive/neon upscale; terminal/tiles/bands scale from this (100–400).</summary>
     public int OcrBoostUpscalePercent { get; set; } = 200;
@@ -48,8 +50,8 @@ public sealed class AppConfig
     public MonitorSelection MonitorSelection { get; set; } = MonitorSelection.Primary;
     public int SpecificMonitorIndex { get; set; }
     public bool StartWithWindows { get; set; }
-    public bool StartMonitoringOnLaunch { get; set; } = false;
-    public bool DebugSaveJsonSidecars { get; set; } = false;
+    public bool StartMonitoringOnLaunch { get; set; }
+    public bool DebugSaveJsonSidecars { get; set; }
     public LogLevel LogLevel { get; set; } = LogLevel.Info;
     public string PauseHotkey { get; set; } = "Ctrl+Shift+P";
     public int RetentionMaxAgeDays { get; set; } = 14;

@@ -346,12 +346,24 @@
           <StackPanel>
             <TextBlock Text="Performance" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,4" />
             <TextBlock TextWrapping="Wrap" Opacity="0.75" Margin="0,0,0,12"
-                       Text="Optimize for this PC runs about 10 seconds: it times Very Low→Ultra on test windows and picks the quality knee (where richer OCR stops helping). Review the values below, then Save." />
+                       Text="Pick a quality preset, or run Optimize for this PC (~10s) to time Very Low→Ultra on test windows. Either way, review the knobs below, then Save." />
+
+            <Grid Margin="0,0,0,8">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="220" />
+                <ColumnDefinition Width="*" />
+              </Grid.ColumnDefinitions>
+              <TextBlock Grid.Column="0" Text="Quality preset" VerticalAlignment="Center"
+                         ToolTip="Applies a named OCR performance profile to the fields below. Does not save until you click Save." />
+              <ComboBox x:Name="QualityPresetBox" Grid.Column="1" Width="180" HorizontalAlignment="Left"
+                        SelectionChanged="QualityPresetBox_SelectionChanged"
+                        ToolTip="Very Low → Ultra. Changing this fills the Advanced knobs from that profile; Save to apply." />
+            </Grid>
 
             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
               <Button Content="Optimize for this PC…" Width="180" Margin="0,0,8,0"
                       Click="OptimizeForThisPc_Click"
-                      ToolTip="About 10 seconds. Shows plain and neon test windows, times Very Low→Ultra (3 trials each), picks the P1dB quality knee. Does not save until you click Save." />
+                      ToolTip="About 10 seconds. Shows plain and neon test windows, times Very Low→Ultra (3 trials each), picks a profile for this hardware. Does not save until you click Save." />
               <Button Content="Reset performance to defaults" Width="200"
                       Click="ResetPerformance_Click"
                       ToolTip="Restore Ultra (default) performance knobs into the form without saving." />
@@ -366,6 +378,7 @@
                   <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto" />
                   <RowDefinition Height="Auto" />
                   <RowDefinition Height="Auto" />
                   <RowDefinition Height="Auto" />
@@ -393,9 +406,12 @@
                 <TextBox x:Name="OcrAbsoluteMaxWidthBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
                          ToolTip="Hard cap after upscale (960–3840). Keeps boosted OCR from becoming 4K-wide on weak PCs." />
 
-                <CheckBox x:Name="OcrInvertBox" Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2"
+                <CheckBox x:Name="OcrInvertBox" Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,0,0,8"
                           Content="Extra invert pass for OCR"
                           ToolTip="Adds an invert-only OCR pass. Adaptive grayscale contrast and neon boost already run when enabled below; captures stay full color." />
+                <CheckBox x:Name="OcrEnableGrayBox" Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="2"
+                          Content="Extra grayscale pass for OCR"
+                          ToolTip="Adds a plain luma grayscale OCR pass (no contrast stretch). Adaptive and neon passes already convert to gray when enabled below; captures stay full color." />
               </Grid>
             </GroupBox>
 

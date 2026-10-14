@@ -161,10 +161,14 @@ public sealed class PhaseProfiler
         ticks * 1000.0 / Stopwatch.Frequency;
 
     private static string FormatMs(double ms) =>
-        ms < 10 ? ms.ToString("0.#") : ((long)Math.Round(ms)).ToString();
+        ms < 10
+            ? ms.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)
+            : ((long)Math.Round(ms)).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     private static string FormatPercent(double pct) =>
-        pct < 10 ? pct.ToString("0.#") : ((long)Math.Round(pct)).ToString();
+        pct < 10
+            ? pct.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)
+            : ((long)Math.Round(pct)).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     private sealed class PhaseStats
     {

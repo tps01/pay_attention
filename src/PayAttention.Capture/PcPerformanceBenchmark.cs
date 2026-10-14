@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing;
 using PayAttention.Core.Models;
 using PayAttention.Core.Services;
+using MatchMode = PayAttention.Core.Models.MatchMode;
 
 namespace PayAttention.Capture;
 
@@ -172,7 +173,26 @@ public sealed class PcPerformanceBenchmark
         }
     }
 
-    private static bool ContainsToken(string text, string token) =>
-        !string.IsNullOrEmpty(text) &&
-        text.Contains(token, StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// True when OCR text contains the calibration token. Uses the same confusable folding
+    /// as live triggers (O/0, etc.) — naive substring misses common OCR slips like "0K".
+    /// </summary>
+    private static bool ContainsToken(string text, string token)
+    {
+        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(token))
+            return false;
+        if (text.Contains(token, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var triggers = new[]
+        {
+            new TriggerConfig
+            {
+                Text = token,
+                Match = MatchMode.Contains,
+                Enabled = true
+            }
+        };
+        return TriggerMatcher.HasAnyMatch(text, triggers);
+    }
 }

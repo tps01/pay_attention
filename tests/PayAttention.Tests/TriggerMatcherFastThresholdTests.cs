@@ -88,7 +88,7 @@ public class TriggerMatcherFastThresholdTests
     }
 
     [Fact]
-    public void FindMatch_returns_first_list_order_hit()
+    public void FindMatches_returns_first_list_order_hit()
     {
         var triggers = new[]
         {
@@ -96,9 +96,9 @@ public class TriggerMatcherFastThresholdTests
             new TriggerConfig { Text = "alpha", Match = MatchMode.Contains, Enabled = true }
         };
 
-        var match = TriggerMatcher.FindMatch("alpha and beta", triggers);
-        Assert.NotNull(match);
-        Assert.Equal("beta", match!.Trigger.Text);
+        var matches = TriggerMatcher.FindMatches("alpha and beta", triggers);
+        Assert.Equal(2, matches.Count);
+        Assert.Equal("beta", matches[0].Trigger.Text);
     }
 
     [Fact]

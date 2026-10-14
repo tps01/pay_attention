@@ -25,7 +25,6 @@ public partial class SettingsWindow : Window
     private readonly AppLogger _logger;
     private readonly ObservableCollection<TriggerConfig> _triggers;
     private readonly ObservableCollection<ApplicationRow> _applications;
-    private readonly ScreenGrabber _grabber = new();
     private bool _loadingUi;
     private bool _handlingTriggerFilter;
     private PerformanceProfileKind _appliedPerformanceProfile = PerformanceProfileKind.Ultra;
@@ -50,6 +49,11 @@ public partial class SettingsWindow : Window
             new ScopeOption(ApplicationScopeMode.Whitelisted, "Whitelisted Applications"),
             new ScopeOption(ApplicationScopeMode.AllMinusBlacklisted, "All Minus Blacklisted Applications")
         };
+        QualityPresetBox.ItemsSource = PerformanceProfiles.All
+            .Select(d => new QualityPresetOption(d.Kind, PerformanceProfiles.DisplayName(d.Kind)))
+            .ToList();
+        QualityPresetBox.DisplayMemberPath = nameof(QualityPresetOption.Display);
+        QualityPresetBox.SelectedValuePath = nameof(QualityPresetOption.Kind);
 
         _triggers = new ObservableCollection<TriggerConfig>();
         _applications = new ObservableCollection<ApplicationRow>();
@@ -92,37 +96,39 @@ public partial class SettingsWindow : Window
             _applications.Add(ApplicationRow.FromConfig(a));
 
         CaptureDirectoryBox.Text = config.CaptureDirectory;
-        OcrIntervalBox.Text = config.OcrIntervalMs.ToString();
+        OcrIntervalBox.Text = Inv(config.OcrIntervalMs);
         FastMatchThresholdSlider.Value = Math.Clamp(config.FastMatchThresholdPercent, 50, 100);
         UpdateFastMatchThresholdLabel();
-        DebounceBox.Text = config.DebounceSeconds.ToString();
-        BufferSecondsBox.Text = config.RecordBufferSeconds.ToString();
-        RecordFpsBox.Text = config.RecordFps.ToString();
+        DebounceBox.Text = Inv(config.DebounceSeconds);
+        BufferSecondsBox.Text = Inv(config.RecordBufferSeconds);
+        RecordFpsBox.Text = Inv(config.RecordFps);
         RecordFormatBox.SelectedItem = config.RecordFormat;
-        RecordJpegQualityBox.Text = config.RecordJpegQuality.ToString();
+        RecordJpegQualityBox.Text = Inv(config.RecordJpegQuality);
         ScreenshotFormatBox.SelectedItem = config.ScreenshotFormat;
-        SequenceIntervalBox.Text = config.SequenceIntervalSeconds.ToString();
-        SequenceBeforeBox.Text = config.SequenceBeforeSeconds.ToString();
-        SequenceAfterBox.Text = config.SequenceAfterSeconds.ToString();
-        OcrMaxWidthBox.Text = config.OcrMaxWidth.ToString();
-        OcrUpscaleBox.Text = config.OcrUpscalePercent.ToString();
-        OcrBoostUpscaleBox.Text = config.OcrBoostUpscalePercent.ToString();
-        OcrAbsoluteMaxWidthBox.Text = config.OcrAbsoluteMaxWidth.ToString();
+        SequenceIntervalBox.Text = Inv(config.SequenceIntervalSeconds);
+        SequenceBeforeBox.Text = Inv(config.SequenceBeforeSeconds);
+        SequenceAfterBox.Text = Inv(config.SequenceAfterSeconds);
+        OcrMaxWidthBox.Text = Inv(config.OcrMaxWidth);
+        OcrUpscaleBox.Text = Inv(config.OcrUpscalePercent);
+        OcrBoostUpscaleBox.Text = Inv(config.OcrBoostUpscalePercent);
+        OcrAbsoluteMaxWidthBox.Text = Inv(config.OcrAbsoluteMaxWidth);
         OcrInvertBox.IsChecked = config.OcrInvertColors;
+        OcrEnableGrayBox.IsChecked = config.OcrEnableGray;
         OcrEnableAdaptiveBox.IsChecked = config.OcrEnableAdaptive;
         OcrEnableNeonBox.IsChecked = config.OcrEnableNeon;
         OcrEnableTerminalBox.IsChecked = config.OcrEnableTerminal;
-        OcrTerminalMaxRegionsBox.Text = config.OcrTerminalMaxRegions.ToString();
-        OcrMaxWindowsBox.Text = config.OcrMaxWindows.ToString();
-        OcrQueueCapacityBox.Text = config.OcrQueueCapacity.ToString();
-        OcrCascadeBudgetFastBox.Text = config.OcrCascadeBudgetFastMs.ToString();
-        OcrCascadeBudgetThoroughBox.Text = config.OcrCascadeBudgetThoroughMs.ToString();
+        OcrTerminalMaxRegionsBox.Text = Inv(config.OcrTerminalMaxRegions);
+        OcrMaxWindowsBox.Text = Inv(config.OcrMaxWindows);
+        OcrQueueCapacityBox.Text = Inv(config.OcrQueueCapacity);
+        OcrCascadeBudgetFastBox.Text = Inv(config.OcrCascadeBudgetFastMs);
+        OcrCascadeBudgetThoroughBox.Text = Inv(config.OcrCascadeBudgetThoroughMs);
         OcrApplyBudgetWhenIdleBox.IsChecked = config.OcrApplyBudgetWhenIdle;
         UseBackgroundPriorityBox.IsChecked = config.UseBackgroundPriority;
         CalibrationSummaryText.Text = string.IsNullOrWhiteSpace(config.LastCalibrationSummary)
             ? "Not calibrated on this PC yet."
             : config.LastCalibrationSummary;
         _appliedPerformanceProfile = config.AppliedPerformanceProfile;
+        QualityPresetBox.SelectedValue = config.AppliedPerformanceProfile;
         CaptureScopeBox.SelectedItem = config.CaptureScope;
         ApplicationScopeBox.SelectedValue = config.ApplicationScope;
         StartWithWindowsBox.IsChecked = config.StartWithWindows;
@@ -130,8 +136,8 @@ public partial class SettingsWindow : Window
         DebugJsonBox.IsChecked = config.DebugSaveJsonSidecars;
         LogLevelBox.SelectedItem = config.LogLevel;
         HotkeyBox.Text = config.PauseHotkey;
-        RetentionDaysBox.Text = config.RetentionMaxAgeDays.ToString();
-        RetentionFilesBox.Text = config.RetentionMaxFiles.ToString();
+        RetentionDaysBox.Text = Inv(config.RetentionMaxAgeDays);
+        RetentionFilesBox.Text = Inv(config.RetentionMaxFiles);
 
         MonitorModeBox.SelectedItem = config.MonitorSelection;
         RefreshMonitors(config.SpecificMonitorIndex);
@@ -179,11 +185,7 @@ public partial class SettingsWindow : Window
     {
         try
         {
-            CommitGrids();
-            var config = BuildConfigFromUi();
-            PerformanceProfiles.Apply(config, PerformanceProfileKind.Ultra);
-            config.LastCalibrationSummary = "Reset to Ultra defaults (not saved yet).";
-            ApplyConfigToUi(config);
+            ApplyQualityPreset(PerformanceProfileKind.Ultra, "Reset to Ultra defaults (not saved yet).");
             ShowAdvancedTab();
         }
         catch (Exception ex)
@@ -192,10 +194,41 @@ public partial class SettingsWindow : Window
         }
     }
 
+    private void QualityPresetBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingUi)
+            return;
+        if (QualityPresetBox.SelectedValue is not PerformanceProfileKind kind)
+            return;
+        if (kind == _appliedPerformanceProfile)
+            return;
+
+        try
+        {
+            ApplyQualityPreset(
+                kind,
+                $"Manual preset: {PerformanceProfiles.DisplayName(kind)} (not saved yet).");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "pay_attention", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>Fill Advanced knobs from a named profile without saving.</summary>
+    private void ApplyQualityPreset(PerformanceProfileKind kind, string summary)
+    {
+        CommitGrids();
+        var config = BuildConfigFromUi();
+        PerformanceProfiles.Apply(config, kind);
+        config.LastCalibrationSummary = summary;
+        ApplyConfigToUi(config);
+    }
+
 
     private void RefreshMonitors(int selectedIndex)
     {
-        var monitors = _grabber.GetMonitors()
+        var monitors = ScreenGrabber.GetMonitors()
             .Select(m => new MonitorOption
             {
                 Index = m.Index,
@@ -273,7 +306,7 @@ public partial class SettingsWindow : Window
         if (sender is not Button { Tag: ApplicationRow row })
             return;
 
-        var names = _grabber.GetRunningProcessNames();
+        var names = ScreenGrabber.GetRunningProcessNames();
         var dialog = new Window
         {
             Title = "Pick application",
@@ -613,46 +646,41 @@ public partial class SettingsWindow : Window
         ApplicationsGrid.CommitEdit(DataGridEditingUnit.Row, true);
     }
 
+    private static string Inv(int value) =>
+        value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    private static int RequireInt(System.Windows.Controls.TextBox box, string label)
+    {
+        if (!int.TryParse(
+                box.Text,
+                System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var value))
+            throw new InvalidOperationException($"{label} must be an integer.");
+        return value;
+    }
+
     private AppConfig BuildConfigFromUi()
     {
-        if (!int.TryParse(OcrIntervalBox.Text, out var ocrInterval))
-            throw new InvalidOperationException("OCR interval must be an integer.");
-        if (!int.TryParse(DebounceBox.Text, out var debounce))
-            throw new InvalidOperationException("Debounce must be an integer.");
-        if (!int.TryParse(BufferSecondsBox.Text, out var bufferSeconds))
-            throw new InvalidOperationException("Record buffer seconds must be an integer.");
-        if (!int.TryParse(RecordFpsBox.Text, out var fps))
-            throw new InvalidOperationException("Record FPS must be an integer.");
-        if (!int.TryParse(SequenceIntervalBox.Text, out var sequenceInterval))
-            throw new InvalidOperationException("Sequence spacing must be an integer.");
-        if (!int.TryParse(SequenceBeforeBox.Text, out var sequenceBefore))
-            throw new InvalidOperationException("Sequence before seconds must be an integer.");
-        if (!int.TryParse(SequenceAfterBox.Text, out var sequenceAfter))
-            throw new InvalidOperationException("Sequence after seconds must be an integer.");
-        if (!int.TryParse(RetentionDaysBox.Text, out var retentionDays))
-            throw new InvalidOperationException("Retention days must be an integer.");
-        if (!int.TryParse(RetentionFilesBox.Text, out var retentionFiles))
-            throw new InvalidOperationException("Retention max files must be an integer.");
-        if (!int.TryParse(OcrMaxWidthBox.Text, out var ocrMaxWidth))
-            throw new InvalidOperationException("OCR max width must be an integer.");
-        if (!int.TryParse(OcrUpscaleBox.Text, out var ocrUpscale))
-            throw new InvalidOperationException("OCR upscale percent must be an integer.");
-        if (!int.TryParse(OcrBoostUpscaleBox.Text, out var ocrBoost))
-            throw new InvalidOperationException("OCR boost upscale percent must be an integer.");
-        if (!int.TryParse(OcrAbsoluteMaxWidthBox.Text, out var ocrAbsoluteMax))
-            throw new InvalidOperationException("OCR absolute max width must be an integer.");
-        if (!int.TryParse(OcrTerminalMaxRegionsBox.Text, out var ocrTerminalRegions))
-            throw new InvalidOperationException("Terminal max regions must be an integer.");
-        if (!int.TryParse(OcrMaxWindowsBox.Text, out var ocrMaxWindows))
-            throw new InvalidOperationException("OCR max windows must be an integer.");
-        if (!int.TryParse(OcrQueueCapacityBox.Text, out var ocrQueueCapacity))
-            throw new InvalidOperationException("OCR queue capacity must be an integer.");
-        if (!int.TryParse(OcrCascadeBudgetFastBox.Text, out var ocrBudgetFast))
-            throw new InvalidOperationException("Fast cascade budget must be an integer.");
-        if (!int.TryParse(OcrCascadeBudgetThoroughBox.Text, out var ocrBudgetThorough))
-            throw new InvalidOperationException("Thorough cascade budget must be an integer.");
-        if (!int.TryParse(RecordJpegQualityBox.Text, out var jpegQuality))
-            throw new InvalidOperationException("JPEG quality must be an integer.");
+        var ocrInterval = RequireInt(OcrIntervalBox, "OCR interval");
+        var debounce = RequireInt(DebounceBox, "Debounce");
+        var bufferSeconds = RequireInt(BufferSecondsBox, "Record buffer seconds");
+        var fps = RequireInt(RecordFpsBox, "Record FPS");
+        var sequenceInterval = RequireInt(SequenceIntervalBox, "Sequence spacing");
+        var sequenceBefore = RequireInt(SequenceBeforeBox, "Sequence before seconds");
+        var sequenceAfter = RequireInt(SequenceAfterBox, "Sequence after seconds");
+        var retentionDays = RequireInt(RetentionDaysBox, "Retention days");
+        var retentionFiles = RequireInt(RetentionFilesBox, "Retention max files");
+        var ocrMaxWidth = RequireInt(OcrMaxWidthBox, "OCR max width");
+        var ocrUpscale = RequireInt(OcrUpscaleBox, "OCR upscale percent");
+        var ocrBoost = RequireInt(OcrBoostUpscaleBox, "OCR boost upscale percent");
+        var ocrAbsoluteMax = RequireInt(OcrAbsoluteMaxWidthBox, "OCR absolute max width");
+        var ocrTerminalRegions = RequireInt(OcrTerminalMaxRegionsBox, "Terminal max regions");
+        var ocrMaxWindows = RequireInt(OcrMaxWindowsBox, "OCR max windows");
+        var ocrQueueCapacity = RequireInt(OcrQueueCapacityBox, "OCR queue capacity");
+        var ocrBudgetFast = RequireInt(OcrCascadeBudgetFastBox, "Fast cascade budget");
+        var ocrBudgetThorough = RequireInt(OcrCascadeBudgetThoroughBox, "Thorough cascade budget");
+        var jpegQuality = RequireInt(RecordJpegQualityBox, "JPEG quality");
 
         var monitorMode = MonitorModeBox.SelectedItem is MonitorSelection ms ? ms : MonitorSelection.Primary;
         var specificIndex = SpecificMonitorBox.SelectedValue is int idx ? idx : 0;
@@ -724,6 +752,7 @@ public partial class SettingsWindow : Window
             CaptureScope = captureScope,
             ApplicationScope = applicationScope,
             OcrInvertColors = OcrInvertBox.IsChecked == true,
+            OcrEnableGray = OcrEnableGrayBox.IsChecked == true,
             OcrUpscalePercent = ocrUpscale,
             OcrBoostUpscalePercent = ocrBoost,
             OcrAbsoluteMaxWidth = ocrAbsoluteMax,
@@ -767,7 +796,8 @@ public partial class SettingsWindow : Window
     {
         if (FastMatchThresholdLabel is null || FastMatchThresholdSlider is null)
             return;
-        FastMatchThresholdLabel.Text = $"{(int)Math.Round(FastMatchThresholdSlider.Value)}%";
+        FastMatchThresholdLabel.Text =
+            $"{((int)Math.Round(FastMatchThresholdSlider.Value)).ToString(System.Globalization.CultureInfo.InvariantCulture)}%";
     }
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
@@ -833,6 +863,18 @@ public partial class SettingsWindow : Window
         }
 
         public ApplicationScopeMode Value { get; }
+        public string Display { get; }
+    }
+
+    private sealed class QualityPresetOption
+    {
+        public QualityPresetOption(PerformanceProfileKind kind, string display)
+        {
+            Kind = kind;
+            Display = display;
+        }
+
+        public PerformanceProfileKind Kind { get; }
         public string Display { get; }
     }
 

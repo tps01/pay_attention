@@ -37,7 +37,7 @@ public class TriggerFireCoalescerTests
         });
 
         Assert.Equal(3, fires.Count);
-        Assert.Equal(new[] { "error", "warning", "fatal" }, claimed);
+        Assert.Equal(["error", "warning", "fatal"], claimed);
     }
 
     [Fact]

@@ -2174,10 +2174,9 @@ internal static class Program
         DumpDir(captureDir);
         try
         {
-            var grabber = new ScreenGrabber();
             var harness = ApplicationScopeEvaluator.NormalizeProcessName(
                 System.Diagnostics.Process.GetCurrentProcess().ProcessName);
-            using var frame = grabber.TryCaptureProcessWindows([harness]) ?? grabber.CapturePrimary();
+            using var frame = ScreenGrabber.TryCaptureProcessWindows([harness]) ?? ScreenGrabber.CapturePrimary();
             using var prep = ImageHelpers.PrepareForOcr(frame.Bitmap, 1920, 200, invertColors: true);
             var ocrText = new OcrService().RecognizeAsync(prep).GetAwaiter().GetResult();
             Console.Error.WriteLine($"  OCR sample: {(ocrText.Length > 500 ? ocrText[..500] : ocrText)}");

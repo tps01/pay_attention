@@ -55,25 +55,23 @@ public static class OptimizeForThisPcRunner
 
         Window? plainWindow = null;
         Window? neonWindow = null;
-        var progressDialog = CreateProgressDialog(owner);
+        Window? progressDialog = null;
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        progressDialog.Closing += (_, e) =>
-        {
-            if (!linked.IsCancellationRequested)
-                linked.Cancel();
-        };
-        progressDialog.Show();
 
         try
         {
-            plainWindow = CreatePlainWindow();
-            neonWindow = CreateNeonWindow();
+            // Show fixtures first, side-by-side, with no progress dialog covering them.
+            var layout = LayoutCalibrationWindows();
+            plainWindow = CreatePlainWindow(layout.PlainLeft, layout.PlainTop);
+            neonWindow = CreateNeonWindow(layout.NeonLeft, layout.NeonTop);
             plainWindow.Show();
             neonWindow.Show();
-            // Let DWM paint before PrintWindow / CopyFromScreen.
+            // Let DWM paint before PrintWindow.
             await Task.Delay(250, linked.Token).ConfigureAwait(true);
 
+            plainWindow.Activate();
             using var plainBmp = CaptureWindowBitmap(plainWindow);
+            neonWindow.Activate();
             using var neonBmp = CaptureWindowBitmap(neonWindow);
             if (plainBmp is null || neonBmp is null)
             {
@@ -85,6 +83,20 @@ public static class OptimizeForThisPcRunner
                     MessageBoxImage.Error);
                 return null;
             }
+
+            // Bitmaps are frozen — close fixtures so only the progress UI remains.
+            try { plainWindow.Close(); } catch { /* ignore */ }
+            try { neonWindow.Close(); } catch { /* ignore */ }
+            plainWindow = null;
+            neonWindow = null;
+
+            progressDialog = CreateProgressDialog(owner, layout.ProgressLeft, layout.ProgressTop);
+            progressDialog.Closing += (_, _) =>
+            {
+                if (!linked.IsCancellationRequested)
+                    linked.Cancel();
+            };
+            progressDialog.Show();
 
             var progress = new Progress<string>(msg =>
             {
@@ -124,7 +136,7 @@ public static class OptimizeForThisPcRunner
         }
         finally
         {
-            try { progressDialog.Close(); } catch { /* ignore */ }
+            try { progressDialog?.Close(); } catch { /* ignore */ }
             try { plainWindow?.Close(); } catch { /* ignore */ }
             try { neonWindow?.Close(); } catch { /* ignore */ }
 
@@ -133,11 +145,59 @@ public static class OptimizeForThisPcRunner
         }
     }
 
-    private static Window CreateProgressDialog(Window owner)
+    private readonly record struct CalibrationLayout(
+        double PlainLeft,
+        double PlainTop,
+        double NeonLeft,
+        double NeonTop,
+        double ProgressLeft,
+        double ProgressTop);
+
+    /// <summary>
+    /// Place plain and neon side-by-side (or stacked on a narrow display), and park the
+    /// progress dialog in the opposite corner so nothing covers a fixture during capture.
+    /// </summary>
+    private static CalibrationLayout LayoutCalibrationWindows()
+    {
+        const double margin = 24;
+        const double gap = 24;
+        const double plainW = 420;
+        const double plainH = 160;
+        const double neonW = 360;
+        const double progressW = 420;
+        const double progressH = 150;
+
+        var work = SystemParameters.WorkArea;
+        var plainLeft = work.Left + margin;
+        var plainTop = work.Top + margin;
+
+        double neonLeft;
+        double neonTop;
+        if (work.Width >= plainW + gap + neonW + margin * 2)
+        {
+            // Side-by-side on a normal desktop.
+            neonLeft = plainLeft + plainW + gap;
+            neonTop = plainTop;
+        }
+        else
+        {
+            // Narrow / portrait: stack vertically with a clear gap.
+            neonLeft = plainLeft;
+            neonTop = plainTop + plainH + gap;
+        }
+
+        // Progress: bottom-right, clear of the fixture tiles.
+        var progressLeft = Math.Max(work.Left + margin, work.Right - progressW - margin);
+        var progressTop = Math.Max(work.Top + margin, work.Bottom - progressH - margin);
+
+        return new CalibrationLayout(plainLeft, plainTop, neonLeft, neonTop, progressLeft, progressTop);
+    }
+
+    private static Window CreateProgressDialog(Window owner, double left, double top)
     {
         var label = new TextBlock
         {
-            Text = "Preparing test windows… (about 10 seconds)",
+            Text = "Timing OCR profiles… (about 10 seconds)",
             Margin = new Thickness(16),
             TextWrapping = TextWrapping.Wrap
         };
@@ -158,15 +218,18 @@ public static class OptimizeForThisPcRunner
             Owner = owner,
             Width = 420,
             Height = 150,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            WindowStartupLocation = WindowStartupLocation.Manual,
+            Left = left,
+            Top = top,
             ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false,
             Content = panel
         };
         cancel.Click += (_, _) => dialog.Close();
         return dialog;
     }
 
-    private static Window CreatePlainWindow()
+    private static Window CreatePlainWindow(double left, double top)
     {
         var text = new TextBlock
         {
@@ -187,21 +250,22 @@ public static class OptimizeForThisPcRunner
             Topmost = true,
             ShowInTaskbar = false,
             WindowStartupLocation = WindowStartupLocation.Manual,
-            Left = 80,
-            Top = 80,
+            Left = left,
+            Top = top,
             Content = text
         };
     }
 
-    private static Window CreateNeonWindow()
+    private static Window CreateNeonWindow(double left, double top)
     {
-        // Harder than plain: small dim Consolas so lean profiles often miss neon.
+        // Harder than plain: small dim Consolas so lean profiles miss without neon prep.
+        // Keep green dark enough that baseline OCR struggles; High/Ultra neon pass recovers it.
         var text = new TextBlock
         {
             Text = PerformanceProfiles.NeonToken,
             FontFamily = new FontFamily("Consolas"),
-            FontSize = 8,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x1F, 0xAF, 0x0A)),
+            FontSize = 7,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x12, 0x6B, 0x08)),
             HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(16)
@@ -215,8 +279,8 @@ public static class OptimizeForThisPcRunner
             Topmost = true,
             ShowInTaskbar = false,
             WindowStartupLocation = WindowStartupLocation.Manual,
-            Left = 80,
-            Top = 280,
+            Left = left,
+            Top = top,
             Content = text
         };
     }
@@ -230,8 +294,7 @@ public static class OptimizeForThisPcRunner
         if (hwnd == IntPtr.Zero)
             return null;
 
-        var grabber = new ScreenGrabber();
-        using (var frame = grabber.TryCaptureWindow(hwnd))
+        using (var frame = ScreenGrabber.TryCaptureWindow(hwnd))
         {
             if (frame is not null)
                 return (Bitmap)frame.Bitmap.Clone();

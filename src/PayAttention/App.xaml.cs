@@ -11,7 +11,7 @@ using MessageBox = System.Windows.MessageBox;
 
 namespace PayAttention;
 
-public partial class App : Application
+public partial class App : Application, IDisposable
 {
     private static Mutex? _instanceMutex;
     private ConfigService _configService = null!;
@@ -67,7 +67,7 @@ public partial class App : Application
         _monitor.StatusChanged += (_, args) =>
         {
             _statusText = args.Status;
-            Dispatcher.Invoke(UpdateTrayText);
+            Dispatcher.BeginInvoke(UpdateTrayText);
             if (!string.IsNullOrWhiteSpace(args.Detail))
                 _logger.Info(args.Detail);
 
@@ -76,7 +76,7 @@ public partial class App : Application
                 !string.IsNullOrWhiteSpace(args.Detail))
             {
                 var detail = args.Detail!;
-                Dispatcher.Invoke(() =>
+                Dispatcher.BeginInvoke(() =>
                 {
                     _tray?.ShowBalloonTip(2000, "pay_attention", detail, ToolTipIcon.Info);
                 });
@@ -84,7 +84,7 @@ public partial class App : Application
         };
         _monitor.TriggerFired += (_, args) =>
         {
-            Dispatcher.Invoke(() =>
+            Dispatcher.BeginInvoke(() =>
             {
                 _tray?.ShowBalloonTip(
                     2000,
@@ -95,7 +95,7 @@ public partial class App : Application
         };
 
         BuildTray();
-        RegisterHotkey(showErrors: true);
+        RegisterHotkey();
 
         if (!_monitor.OcrAvailable)
         {
@@ -228,7 +228,7 @@ public partial class App : Application
         {
             _config = cfg;
             _logger.MinLevel = cfg.LogLevel;
-            RegisterHotkey(showErrors: true);
+            RegisterHotkey();
             UpdateTrayText();
         };
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;
@@ -305,7 +305,7 @@ public partial class App : Application
         }
     }
 
-    private void RegisterHotkey(bool showErrors)
+    private void RegisterHotkey()
     {
         _hotkey?.Dispose();
         _hotkey = null;
@@ -321,7 +321,7 @@ public partial class App : Application
                 if (_monitor.IsRunning)
                 {
                     _monitor.TogglePause();
-                    Dispatcher.Invoke(UpdateTrayText);
+                    Dispatcher.BeginInvoke(UpdateTrayText);
                 }
             };
             _hotkey.Register(_config.PauseHotkey);
@@ -330,14 +330,11 @@ public partial class App : Application
         catch (Exception ex)
         {
             _logger.Warn($"Could not register hotkey '{_config.PauseHotkey}': {ex.Message}");
-            if (showErrors)
-            {
-                MessageBox.Show(
-                    $"Could not register pause hotkey '{_config.PauseHotkey}'.\n{ex.Message}\n\nChange it in Settings if needed.",
-                    "pay_attention",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-            }
+            MessageBox.Show(
+                $"Could not register pause hotkey '{_config.PauseHotkey}'.\n{ex.Message}\n\nChange it in Settings if needed.",
+                "pay_attention",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
         }
     }
 
@@ -381,5 +378,11 @@ public partial class App : Application
         }
         catch { /* ignore */ }
         _instanceMutex = null;
+    }
+
+    public void Dispose()
+    {
+        Cleanup();
+        GC.SuppressFinalize(this);
     }
 }

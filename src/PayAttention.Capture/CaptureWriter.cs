@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using PayAttention.Core.Models;
@@ -6,9 +7,9 @@ using PayAttention.Core.Services;
 
 namespace PayAttention.Capture;
 
-public sealed class CaptureWriter
+public static class CaptureWriter
 {
-    public string WriteScreenshot(
+    public static string WriteScreenshot(
         Bitmap bitmap,
         CaptureSidecar sidecar,
         string captureDirectory,
@@ -17,7 +18,7 @@ public sealed class CaptureWriter
         bool saveJson = false)
     {
         Directory.CreateDirectory(captureDirectory);
-        var stamp = sidecar.Timestamp.ToLocalTime().ToString("yyyyMMdd_HHmmss_fff");
+        var stamp = sidecar.Timestamp.ToLocalTime().ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
         var safe = Sanitize(sidecar.TriggerText);
         var extension = format == ScreenshotFormat.Png ? ".png" : ".jpg";
         var baseName = $"{stamp}_{safe}_screenshot";
@@ -35,7 +36,7 @@ public sealed class CaptureWriter
         return path;
     }
 
-    public string WriteRecording(
+    public static string WriteRecording(
         IReadOnlyList<BufferedFrame> frames,
         Bitmap? stillFrame,
         CaptureSidecar sidecar,
@@ -47,7 +48,7 @@ public sealed class CaptureWriter
         bool saveJson = false)
     {
         Directory.CreateDirectory(captureDirectory);
-        var stamp = sidecar.Timestamp.ToLocalTime().ToString("yyyyMMdd_HHmmss_fff");
+        var stamp = sidecar.Timestamp.ToLocalTime().ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
         var safe = Sanitize(sidecar.TriggerText);
         var baseName = $"{stamp}_{safe}_record";
         var extension = format == RecordFormat.Gif ? ".gif" : ".avi";
@@ -79,7 +80,7 @@ public sealed class CaptureWriter
     /// Creates a per-event sequence folder, writes pre-trigger buffered stills and the
     /// trigger-moment frame. Returns the folder path. Caller may append post-trigger frames.
     /// </summary>
-    public string WriteScreenshotSequence(
+    public static string WriteScreenshotSequence(
         IReadOnlyList<BufferedFrame> preFrames,
         Bitmap triggerFrame,
         CaptureSidecar sidecar,
@@ -89,7 +90,7 @@ public sealed class CaptureWriter
         bool saveJson = false)
     {
         Directory.CreateDirectory(captureDirectory);
-        var stamp = sidecar.Timestamp.ToLocalTime().ToString("yyyyMMdd_HHmmss_fff");
+        var stamp = sidecar.Timestamp.ToLocalTime().ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
         var safe = Sanitize(sidecar.TriggerText);
         var folderName = $"{stamp}_{safe}_sequence";
         var folder = Path.Combine(captureDirectory, folderName);
@@ -124,7 +125,7 @@ public sealed class CaptureWriter
         return folder;
     }
 
-    public void WriteSequenceStill(
+    public static void WriteSequenceStill(
         string sequenceFolder,
         DateTimeOffset triggerTime,
         DateTimeOffset frameTime,

@@ -62,27 +62,26 @@ internal sealed class OcrFrameQueue : IDisposable
     /// Returns false if skipped or the channel is completed.
     /// On overflow, oldest frames are dropped so the worker prefers fresher samples.
     /// </summary>
-    public bool TryEnqueueIfChanged(CapturedFrame frame, string? foregroundProcess) =>
-        TryEnqueueIfChanged(frame, foregroundProcess, out _);
+    public bool TryEnqueueIfChanged(
+        CapturedFrame frame,
+        string? foregroundProcess,
+        ulong fingerprint) =>
+        TryEnqueueIfChanged(frame, foregroundProcess, fingerprint, out _);
 
     /// <summary>
-    /// Same as <see cref="TryEnqueueIfChanged(CapturedFrame, string?)"/>, and reports why.
+    /// Same as <see cref="TryEnqueueIfChanged(CapturedFrame, string?, ulong)"/>, and reports why.
     /// When <paramref name="profiler"/> and <paramref name="logger"/> are both set, records
-    /// <c>enqueue.hash</c> and <c>enqueue.clone</c> (clone only when a frame is queued).
+    /// <c>enqueue.clone</c> (clone only when a frame is queued).
     /// </summary>
     public bool TryEnqueueIfChanged(
         CapturedFrame frame,
         string? foregroundProcess,
+        ulong fingerprint,
         out OcrEnqueueDecision decision,
         PhaseProfiler? profiler = null,
         AppLogger? logger = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-
-        var hashStart = Stopwatch.GetTimestamp();
-        var fingerprint = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
-        if (profiler is not null && logger is not null)
-            profiler.Record("enqueue.hash", hashStart, logger);
 
         var fg = ApplicationScopeEvaluator.NormalizeProcessName(foregroundProcess);
         var forcedResample = false;

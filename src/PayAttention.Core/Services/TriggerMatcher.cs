@@ -29,12 +29,6 @@ public static class TriggerMatcher
         @"[^0-9a-z]+",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    public static TriggerMatchResult? FindMatch(
-        string ocrText,
-        IEnumerable<TriggerConfig> triggers,
-        int fastMatchThresholdPercent = DefaultFastMatchThresholdPercent) =>
-        MatchCore(ocrText, triggers, fastMatchThresholdPercent, stopAfterFirst: true).FirstOrDefault();
-
     public static bool HasAnyMatch(
         string ocrText,
         IEnumerable<TriggerConfig> triggers,

@@ -26,17 +26,38 @@ public static class OcrCascadePolicy
         return enabled.All(t => matchedIds.Contains(t.Id));
     }
 
-    public static bool AnyEnabledMatched(
-        string text,
+    /// <summary>
+    /// Like <see cref="AllEnabledMatched(IReadOnlySet{Guid}, AppConfig)"/>, but only triggers
+    /// allowed for the current foreground row. Empty allowed set counts as complete (stay quiet).
+    /// </summary>
+    public static bool AllAllowedMatched(
+        IReadOnlySet<Guid> matchedIds,
         AppConfig config,
-        int? fastMatchThresholdPercent = null)
+        string? foregroundProcess)
     {
-        var enabled = EnabledTriggers(config);
-        if (!enabled.Any())
+        var allowed = EnabledTriggers(config)
+            .Where(t => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, t.Id))
+            .ToList();
+        if (allowed.Count == 0)
             return true;
+        return allowed.All(t => matchedIds.Contains(t.Id));
+    }
 
-        var threshold = fastMatchThresholdPercent ?? config.FastMatchThresholdPercent;
-        return TriggerMatcher.HasAnyMatch(text, config.Triggers, threshold);
+    /// <summary>
+    /// True when any trigger allowed for the foreground row is in <paramref name="matchedIds"/>.
+    /// Empty allowed set counts as complete (same as <see cref="AllAllowedMatched"/>).
+    /// </summary>
+    public static bool AnyAllowedMatched(
+        IReadOnlySet<Guid> matchedIds,
+        AppConfig config,
+        string? foregroundProcess)
+    {
+        var allowed = EnabledTriggers(config)
+            .Where(t => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, t.Id))
+            .ToList();
+        if (allowed.Count == 0)
+            return true;
+        return allowed.Any(t => matchedIds.Contains(t.Id));
     }
 
     /// <summary>
@@ -54,18 +75,6 @@ public static class OcrCascadePolicy
     }
 
     /// <summary>
-    /// Deep OCR (tiles/bands) is for Thorough misses. When every still-unmatched trigger
-    /// is Fast (or nothing is left), first-tier (+ optional terminal) is enough.
-    /// </summary>
-    public static bool NeedsDeepCascade(IReadOnlySet<Guid> matchedIds, AppConfig config)
-    {
-        var unmatched = EnabledTriggers(config).Where(t => !matchedIds.Contains(t.Id)).ToList();
-        if (unmatched.Count == 0)
-            return false;
-        return unmatched.Any(t => t.OcrMode == OcrSpeedMode.Thorough);
-    }
-
-    /// <summary>
     /// Backlog budget: Fast when every unmatched trigger is Fast (or none remain).
     /// </summary>
     public static bool UnmatchedAreAllFast(IReadOnlySet<Guid> matchedIds, AppConfig config)
@@ -73,6 +82,13 @@ public static class OcrCascadePolicy
         var unmatched = EnabledTriggers(config).Where(t => !matchedIds.Contains(t.Id)).ToList();
         return unmatched.Count == 0 || unmatched.All(t => t.OcrMode == OcrSpeedMode.Fast);
     }
+
+    /// <summary>
+    /// Deep OCR (tiles/bands) is for Thorough misses — the inverse of
+    /// <see cref="UnmatchedAreAllFast"/>.
+    /// </summary>
+    public static bool NeedsDeepCascade(IReadOnlySet<Guid> matchedIds, AppConfig config) =>
+        !UnmatchedAreAllFast(matchedIds, config);
 
     /// <summary>
     /// Retry a static scene only when this search did not already answer it.
