@@ -15,16 +15,14 @@ public static class OcrCascadePolicy
     public static bool AllEnabledMatched(
         string text,
         AppConfig config,
-        int? fastMatchThresholdPercent = null)
+        int? fastMatchThresholdPercent = null) =>
+        AllEnabledMatched(CollectMatchedIds(text, config, fastMatchThresholdPercent), config);
+
+    public static bool AllEnabledMatched(IReadOnlySet<Guid> matchedIds, AppConfig config)
     {
         var enabled = EnabledTriggers(config).ToList();
         if (enabled.Count == 0)
             return true;
-
-        var threshold = fastMatchThresholdPercent ?? config.FastMatchThresholdPercent;
-        var matchedIds = TriggerMatcher.FindMatches(text, config.Triggers, threshold)
-            .Select(m => m.Trigger.Id)
-            .ToHashSet();
         return enabled.All(t => matchedIds.Contains(t.Id));
     }
 
@@ -39,6 +37,41 @@ public static class OcrCascadePolicy
 
         var threshold = fastMatchThresholdPercent ?? config.FastMatchThresholdPercent;
         return TriggerMatcher.HasAnyMatch(text, config.Triggers, threshold);
+    }
+
+    /// <summary>
+    /// IDs of enabled triggers that currently match <paramref name="text"/>.
+    /// </summary>
+    public static HashSet<Guid> CollectMatchedIds(
+        string text,
+        AppConfig config,
+        int? fastMatchThresholdPercent = null)
+    {
+        var threshold = fastMatchThresholdPercent ?? config.FastMatchThresholdPercent;
+        return TriggerMatcher.FindMatches(text, config.Triggers, threshold)
+            .Select(m => m.Trigger.Id)
+            .ToHashSet();
+    }
+
+    /// <summary>
+    /// Deep OCR (tiles/bands) is for Thorough misses. When every still-unmatched trigger
+    /// is Fast (or nothing is left), first-tier (+ optional terminal) is enough.
+    /// </summary>
+    public static bool NeedsDeepCascade(IReadOnlySet<Guid> matchedIds, AppConfig config)
+    {
+        var unmatched = EnabledTriggers(config).Where(t => !matchedIds.Contains(t.Id)).ToList();
+        if (unmatched.Count == 0)
+            return false;
+        return unmatched.Any(t => t.OcrMode == OcrSpeedMode.Thorough);
+    }
+
+    /// <summary>
+    /// Backlog budget: Fast when every unmatched trigger is Fast (or none remain).
+    /// </summary>
+    public static bool UnmatchedAreAllFast(IReadOnlySet<Guid> matchedIds, AppConfig config)
+    {
+        var unmatched = EnabledTriggers(config).Where(t => !matchedIds.Contains(t.Id)).ToList();
+        return unmatched.Count == 0 || unmatched.All(t => t.OcrMode == OcrSpeedMode.Fast);
     }
 
     /// <summary>

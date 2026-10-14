@@ -17,6 +17,30 @@ public sealed class AppConfig
     public CaptureScope CaptureScope { get; set; } = CaptureScope.Monitor;
     public bool OcrInvertColors { get; set; } = false;
     public int OcrUpscalePercent { get; set; } = 100;
+    /// <summary>Floor for adaptive/neon upscale; terminal/tiles/bands scale from this (100–400).</summary>
+    public int OcrBoostUpscalePercent { get; set; } = 200;
+    /// <summary>Hard cap on OCR bitmap width after upscale (960–3840).</summary>
+    public int OcrAbsoluteMaxWidth { get; set; } = 3840;
+    public bool OcrEnableAdaptive { get; set; } = true;
+    public bool OcrEnableNeon { get; set; } = true;
+    public bool OcrEnableTerminal { get; set; } = true;
+    public int OcrTerminalMaxRegions { get; set; } = 4;
+    /// <summary>Max windows OCR'd in AllMinusBlacklisted monitor mode (1–12).</summary>
+    public int OcrMaxWindows { get; set; } = 12;
+    public int OcrQueueCapacity { get; set; } = 4;
+    public int OcrCascadeBudgetFastMs { get; set; } = 400;
+    public int OcrCascadeBudgetThoroughMs { get; set; } = 8000;
+    /// <summary>
+    /// When true, cascade time budgets apply even with no backlog.
+    /// High (default) keeps budgets only when PendingBehind &gt; 0.
+    /// </summary>
+    public bool OcrApplyBudgetWhenIdle { get; set; }
+    /// <summary>Run capture/OCR workers at BelowNormal priority.</summary>
+    public bool UseBackgroundPriority { get; set; }
+    /// <summary>Last profile chosen by Optimize for this PC (informational).</summary>
+    public PerformanceProfileKind AppliedPerformanceProfile { get; set; } = PerformanceProfileKind.Ultra;
+    /// <summary>One-line summary from the last calibration run.</summary>
+    public string LastCalibrationSummary { get; set; } = string.Empty;
     public int SequenceIntervalSeconds { get; set; } = 5;
     public int SequenceBeforeSeconds { get; set; } = 30;
     public int SequenceAfterSeconds { get; set; } = 30;

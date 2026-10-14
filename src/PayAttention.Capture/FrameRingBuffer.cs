@@ -53,6 +53,20 @@ public sealed class FrameRingBuffer : IDisposable
         }
     }
 
+    /// <summary>
+    /// True when a frame at <paramref name="timestamp"/> would be accepted (capacity and min-gap).
+    /// Used by the capture loop to decide whether a full grab is needed for ring freshness.
+    /// </summary>
+    public bool WouldAccept(DateTimeOffset timestamp)
+    {
+        lock (_lock)
+        {
+            if (_capacity <= TimeSpan.Zero)
+                return false;
+            return timestamp - _lastAccepted >= _minGap;
+        }
+    }
+
     public void TryAdd(Bitmap bitmap, DateTimeOffset timestamp, long jpegQuality = 60L)
     {
         lock (_lock)

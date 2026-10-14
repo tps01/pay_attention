@@ -24,11 +24,13 @@ Only one copy should run at a time.
 2. Right-click:
    - **Start** / **Stop** monitoring  
    - **Settings…**  
+   - **Optimize for this PC…** (optional; times OCR profiles on this machine)  
    - **Open captures folder**  
    - **Open logs folder**  
    - **About…** (version)  
    - **Exit**
-3. Open **Settings**, add a **distinctive** trigger, enable it, **Save**, then **Start** monitoring.
+3. On a lab laptop or older PC, run **Optimize for this PC…** once, review the **Advanced** tab, then **Save**.
+4. Open **Settings**, add a **distinctive** trigger, enable it, **Save**, then **Start** monitoring.
 
 Avoid common words like “Error” unless you want many captures of everyday windows.
 
@@ -84,7 +86,7 @@ Pause monitoring with the hotkey (default `Ctrl+Shift+P`) in Settings → Behavi
 - **Whitelisted Applications** — OCR captures **only** whitelisted app windows (best when you want to ignore everything else, even on other monitors)  
 - **All Minus Blacklisted Applications** — skip OCR when a *fully* blacklisted app is in the **foreground**; otherwise blacklisted windows are masked out of the grab (so Settings text does not fire). Prefer Whitelist if a blacklisted browser on a side monitor must never be read.
 
-By default **PayAttention** is an on blacklist entry so the settings UI does not capture itself.
+By default **PayAttention** is a blacklist entry with triggers **None**: the settings window is masked so its text does not fire, but monitoring keeps running while Settings is focused.
 
 **Monitor** (when capture scope is Monitor): prefer **Primary** or **Specific**. **All** scans every display and is slower—especially with Fast OCR on multi-monitor setups.
 
@@ -124,11 +126,30 @@ Change the capture folder in Settings. **Import…** / **Export…** copy settin
 - **Recording** — buffer length / FPS / quality (defaults **15 s**, **3 FPS**, JPEG **60**)  
 - **Sequence** — spacing / before / after (defaults **5 / 30 / 30** s)  
 - **Start with Windows** / **Start monitoring on launch**  
-- **Log level** — `Info` (default) or `Debug` (extra OCR/match detail in `logs\`)  
+- **Log level** — `Info` (default) or `Debug` (OCR/match detail plus a ranked phase timing breakdown in `logs\`; works in the published exe). Quiet windows look like `grab` + `enqueue.hash` with `pending=0`; busy windows add `ocr.*` / `match`. Profile lines include `[mon=all|primary scope=monitor|foreground interval=500ms pending=N]`.  
 - **Retention** — auto-delete (defaults **14 days** or **200** items)  
 - **Debug JSON sidecars** — leave **off** (can store OCR text next to captures)  
 
-OCR max width / upscale / invert are advanced; extra OCR passes for dark terminals already run. Saved captures stay full color.
+OCR max width / upscale / invert and the cascade knobs live under **Settings → Advanced**. Extra OCR passes for dark terminals run when those Advanced toggles are on (**Ultra** default). Saved captures stay full color.
+
+### Optimize for this PC
+
+Use this on the machine that will run Pay Attention (especially weaker corporate laptops). From the tray or **Settings → Advanced**:
+
+1. The app pauses monitoring if needed and shows two short test windows (plain black-on-white text and small neon-on-black text).
+2. Over about **10 seconds**, it times five profiles — **Very Low → Low → Balanced → High → Ultra** — three trials each, using this PC’s real screen capture and Windows OCR.
+3. It picks the **leanest** profile that still reaches the best recognition quality on those windows (plain and, if possible, neon). That is the quality knee: richer cascades that do not improve reads are discarded. If the knee is far slower than its OCR interval, it steps one rung leaner.
+4. Results fill the Advanced fields. Review them, then click **Save**. Nothing is written to disk until you save.
+
+| Profile | Typical use |
+| --- | --- |
+| **Ultra** | Fast desktops — full cascade (500 ms, all passes); uncalibrated default |
+| **High** | Strong laptops — adaptive on, neon pass off, fewer windows |
+| **Balanced** | Mid-range — between High and Low |
+| **Low** | Older machines — ~1 s interval, baseline + one terminal ROI |
+| **Very Low** | Weakest lab PCs — baseline only, longest interval, background priority |
+
+**Reset performance to defaults** restores the **Ultra** profile into the form without saving. Advanced values are stored in `config.json` and travel with **Export…** / **Import…**.
 
 ## Tips for serial consoles
 

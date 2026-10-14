@@ -99,13 +99,25 @@ public static class TriggerMatcher
                     var needle = Normalize(trigger.Text);
                     var foldedNeedle = FoldConfusables(needle);
                     var compactNeedle = CompactAlnum(foldedNeedle);
-                    if (normalizedHaystack.Contains(needle, StringComparison.OrdinalIgnoreCase) ||
+                    var hit =
+                        normalizedHaystack.Contains(needle, StringComparison.OrdinalIgnoreCase) ||
                         foldedHaystack.Contains(foldedNeedle, StringComparison.OrdinalIgnoreCase) ||
                         (!string.IsNullOrEmpty(compactNeedle) &&
                          compactHaystack.Contains(compactNeedle, StringComparison.OrdinalIgnoreCase)) ||
-                        FuzzyContains(compactHaystack, compactNeedle) ||
-                        (trigger.OcrMode == OcrSpeedMode.Fast &&
-                         MeetsFastSimilarityThreshold(compactHaystack, compactNeedle, threshold)))
+                        FuzzyContains(compactHaystack, compactNeedle);
+
+                    // Fast similarity is only useful when it allows more edits than FuzzyContains.
+                    // At typical thresholds (e.g. 85%+), FuzzyContains already covers that band, so
+                    // skip the expensive sliding-window rescan on long OCR haystacks.
+                    if (!hit &&
+                        trigger.OcrMode == OcrSpeedMode.Fast &&
+                        NeedsBroaderFastSimilarity(compactNeedle, threshold) &&
+                        MeetsFastSimilarityThreshold(compactHaystack, compactNeedle, threshold))
+                    {
+                        hit = true;
+                    }
+
+                    if (hit)
                     {
                         results.Add(new TriggerMatchResult { Trigger = trigger, MatchedPortion = trigger.Text });
                         if (stopAfterFirst)
@@ -211,6 +223,22 @@ public static class TriggerMatcher
     }
 
     /// <summary>
+    /// True when the Fast threshold permits a larger edit distance than <see cref="FuzzyContains"/>.
+    /// </summary>
+    internal static bool NeedsBroaderFastSimilarity(string compactNeedle, int thresholdPercent)
+    {
+        if (string.IsNullOrEmpty(compactNeedle) || compactNeedle.Length < 6)
+            return false;
+
+        var threshold = Math.Clamp(thresholdPercent, 50, 100);
+        // Edits allowed by threshold: score = 100*(1-dist/len) >= threshold
+        // => dist <= len * (1 - threshold/100)
+        var maxDistForThreshold = (int)Math.Floor(compactNeedle.Length * (1.0 - threshold / 100.0));
+        var fuzzyMax = compactNeedle.Length >= 8 ? 2 : 1;
+        return maxDistForThreshold > fuzzyMax;
+    }
+
+    /// <summary>
     /// Best window score: 100 * (1 - Levenshtein / max(window, needle length)).
     /// </summary>
     public static int BestCompactSimilarityPercent(string compactHaystack, string compactNeedle)
@@ -223,29 +251,7 @@ public static class TriggerMatcher
 
         // Search windows near needle length; allow more slack than FuzzyContains when threshold is low.
         var maxDistance = Math.Max(1, (int)Math.Ceiling(compactNeedle.Length * 0.5));
-        var minWindow = Math.Max(1, compactNeedle.Length - maxDistance);
-        var maxWindow = compactNeedle.Length + maxDistance;
-        var best = 0;
-
-        for (var win = minWindow; win <= maxWindow; win++)
-        {
-            if (compactHaystack.Length < win)
-                break;
-
-            for (var i = 0; i <= compactHaystack.Length - win; i++)
-            {
-                var window = compactHaystack.Substring(i, win);
-                var denom = Math.Max(compactNeedle.Length, window.Length);
-                if (denom == 0)
-                    continue;
-                var dist = Levenshtein(window, compactNeedle);
-                var score = (int)Math.Round(100.0 * (1.0 - (double)dist / denom));
-                if (score > best)
-                    best = score;
-            }
-        }
-
-        return best;
+        return BestWindowScorePercent(compactHaystack, compactNeedle, maxDistance);
     }
 
     /// <summary>
@@ -265,6 +271,9 @@ public static class TriggerMatcher
 
         var minWindow = Math.Max(1, needle.Length - maxDistance);
         var maxWindow = needle.Length + maxDistance;
+        var needleFirst = char.ToLowerInvariant(needle[0]);
+        var needleLast = char.ToLowerInvariant(needle[^1]);
+
         for (var win = minWindow; win <= maxWindow; win++)
         {
             if (haystack.Length < win)
@@ -272,8 +281,13 @@ public static class TriggerMatcher
 
             for (var i = 0; i <= haystack.Length - win; i++)
             {
-                var window = haystack.Substring(i, win);
-                if (Levenshtein(window, needle) <= maxDistance)
+                var hFirst = char.ToLowerInvariant(haystack[i]);
+                var hLast = char.ToLowerInvariant(haystack[i + win - 1]);
+                var endPenalty = (hFirst == needleFirst ? 0 : 1) + (hLast == needleLast ? 0 : 1);
+                if (endPenalty > maxDistance)
+                    continue;
+
+                if (LevenshteinBounded(haystack.AsSpan(i, win), needle.AsSpan(), maxDistance) <= maxDistance)
                     return true;
             }
         }
@@ -281,24 +295,115 @@ public static class TriggerMatcher
         return false;
     }
 
-    private static int Levenshtein(string a, string b)
+    /// <summary>
+    /// Sliding-window similarity with banded Levenshtein. Skips hopeless windows via
+    /// first/last char checks so many-trigger + long OCR haystacks stay interactive.
+    /// </summary>
+    private static int BestWindowScorePercent(string haystack, string needle, int maxDistance)
     {
-        var n = a.Length;
-        var m = b.Length;
-        var d = new int[n + 1, m + 1];
-        for (var i = 0; i <= n; i++) d[i, 0] = i;
-        for (var j = 0; j <= m; j++) d[0, j] = j;
-        for (var i = 1; i <= n; i++)
+        var minWindow = Math.Max(1, needle.Length - maxDistance);
+        var maxWindow = needle.Length + maxDistance;
+        var best = 0;
+        var needleFirst = char.ToLowerInvariant(needle[0]);
+        var needleLast = char.ToLowerInvariant(needle[^1]);
+
+        for (var win = minWindow; win <= maxWindow; win++)
         {
-            for (var j = 1; j <= m; j++)
+            if (haystack.Length < win)
+                break;
+
+            var denom = Math.Max(needle.Length, win);
+            // Any distance above this cannot beat the current best (or cannot meet a
+            // useful score). Keep a floor so we still discover the first hit.
+            var usefulDistCap = maxDistance;
+            if (best > 0)
             {
-                var cost = a[i - 1] == b[j - 1] ? 0 : 1;
-                d[i, j] = Math.Min(
-                    Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1),
-                    d[i - 1, j - 1] + cost);
+                var distForBest = (int)Math.Floor(denom * (1.0 - best / 100.0));
+                usefulDistCap = Math.Min(usefulDistCap, Math.Max(0, distForBest - 1));
+            }
+
+            for (var i = 0; i <= haystack.Length - win; i++)
+            {
+                // Cheap reject: ends must be within edit budget of the needle ends.
+                var hFirst = char.ToLowerInvariant(haystack[i]);
+                var hLast = char.ToLowerInvariant(haystack[i + win - 1]);
+                var endPenalty = (hFirst == needleFirst ? 0 : 1) + (hLast == needleLast ? 0 : 1);
+                if (endPenalty > usefulDistCap)
+                    continue;
+
+                var dist = LevenshteinBounded(haystack.AsSpan(i, win), needle.AsSpan(), usefulDistCap);
+                if (dist > usefulDistCap)
+                    continue;
+
+                var score = (int)Math.Round(100.0 * (1.0 - (double)dist / denom));
+                if (score > best)
+                {
+                    best = score;
+                    if (best >= 100)
+                        return 100;
+                    usefulDistCap = Math.Min(
+                        maxDistance,
+                        Math.Max(0, (int)Math.Floor(denom * (1.0 - best / 100.0)) - 1));
+                }
             }
         }
 
-        return d[n, m];
+        return best;
+    }
+
+    /// <summary>
+    /// Banded Levenshtein; returns <paramref name="maxDistance"/> + 1 when the edit
+    /// distance cannot be ≤ maxDistance (Ukkonen-style early abort).
+    /// </summary>
+    private static int LevenshteinBounded(ReadOnlySpan<char> a, ReadOnlySpan<char> b, int maxDistance)
+    {
+        var n = a.Length;
+        var m = b.Length;
+        if (Math.Abs(n - m) > maxDistance)
+            return maxDistance + 1;
+        if (maxDistance < 0)
+            return 0;
+
+        // Two-row DP; compare case-insensitively (haystack/needle are usually folded already).
+        Span<int> prev = stackalloc int[m + 1];
+        Span<int> curr = stackalloc int[m + 1];
+        for (var j = 0; j <= m; j++)
+            prev[j] = j;
+
+        for (var i = 1; i <= n; i++)
+        {
+            curr[0] = i;
+            var rowMin = curr[0];
+            var ai = char.ToLowerInvariant(a[i - 1]);
+            var jStart = Math.Max(1, i - maxDistance);
+            var jEnd = Math.Min(m, i + maxDistance);
+
+            for (var j = 1; j < jStart; j++)
+                curr[j] = maxDistance + 1;
+
+            for (var j = jStart; j <= jEnd; j++)
+            {
+                var cost = ai == char.ToLowerInvariant(b[j - 1]) ? 0 : 1;
+                var del = prev[j] + 1;
+                var ins = curr[j - 1] + 1;
+                var sub = prev[j - 1] + cost;
+                var val = Math.Min(del, Math.Min(ins, sub));
+                curr[j] = val;
+                if (val < rowMin)
+                    rowMin = val;
+            }
+
+            for (var j = jEnd + 1; j <= m; j++)
+                curr[j] = maxDistance + 1;
+
+            if (rowMin > maxDistance)
+                return maxDistance + 1;
+
+            var tmp = prev;
+            prev = curr;
+            curr = tmp;
+        }
+
+        return prev[m];
     }
 }

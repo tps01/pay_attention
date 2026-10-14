@@ -16,354 +16,454 @@
       <Button Content="Close" Width="90" IsCancel="True" Click="Close_Click" />
     </StackPanel>
 
-    <ScrollViewer x:Name="SettingsScrollViewer" VerticalScrollBarVisibility="Auto">
-      <StackPanel>
-        <TextBlock Text="pay_attention" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4" />
-        <TextBlock Text="Capture screenshots, screenshot sequences, or short recordings when trigger text appears on screen."
-                   TextWrapping="Wrap" Opacity="0.75" Margin="0,0,0,16" />
+    <TabControl x:Name="SettingsTabs">
+      <TabItem Header="General">
+        <ScrollViewer x:Name="SettingsScrollViewer" VerticalScrollBarVisibility="Auto" Padding="0,8,0,0">
+          <StackPanel>
+            <TextBlock Text="pay_attention" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4" />
+            <TextBlock Text="Capture screenshots, screenshot sequences, or short recordings when trigger text appears on screen."
+                       TextWrapping="Wrap" Opacity="0.75" Margin="0,0,0,16" />
 
-        <Expander Header="Triggers" IsExpanded="True" Margin="0,0,0,12" ExpandDirection="Down"
-                  Padding="0,6,0,0">
-          <DockPanel Margin="10,4,10,10">
-            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
-              <Button Content="Add" Width="80" Margin="0,0,8,0" Click="AddTrigger_Click" />
-              <Button Content="Remove" Width="80" Click="RemoveTrigger_Click" />
+            <Expander Header="Triggers" IsExpanded="True" Margin="0,0,0,12" ExpandDirection="Down"
+                      Padding="0,6,0,0">
+              <DockPanel Margin="10,4,10,10">
+                <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+                  <Button Content="Add" Width="80" Margin="0,0,8,0" Click="AddTrigger_Click" />
+                  <Button Content="Remove" Width="80" Click="RemoveTrigger_Click" />
+                </StackPanel>
+                <DataGrid x:Name="TriggersGrid"
+                          AutoGenerateColumns="False"
+                          CanUserAddRows="False"
+                          HeadersVisibility="Column"
+                          SelectionMode="Single"
+                          MinHeight="160"
+                          MaxHeight="280"
+                          VerticalScrollBarVisibility="Auto"
+                          PreviewMouseWheel="DataGrid_PreviewMouseWheel">
+                  <DataGrid.Columns>
+                    <DataGridTemplateColumn Header="On" Width="40">
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                          <CheckBox IsChecked="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Text" Binding="{Binding Text, UpdateSourceTrigger=PropertyChanged}" Width="*" />
+                    <DataGridTemplateColumn Header="Match" Width="100">
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                          <ComboBox SelectedItem="{Binding Match, UpdateSourceTrigger=PropertyChanged}">
+                            <models:MatchMode>Contains</models:MatchMode>
+                            <models:MatchMode>Exact</models:MatchMode>
+                            <models:MatchMode>Regex</models:MatchMode>
+                          </ComboBox>
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Header="Action" Width="110">
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                          <ComboBox SelectedItem="{Binding Action, UpdateSourceTrigger=PropertyChanged}">
+                            <models:CaptureAction>Screenshot</models:CaptureAction>
+                            <models:CaptureAction>Record</models:CaptureAction>
+                            <models:CaptureAction>Sequence</models:CaptureAction>
+                          </ComboBox>
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Header="OCR" Width="90">
+                      <DataGridTemplateColumn.HeaderStyle>
+                        <Style TargetType="DataGridColumnHeader">
+                          <Setter Property="ToolTip"
+                                  Value="Fast (default): prefer fresh samples for briefly visible lines. Thorough: full OCR passes for hard-to-read static text." />
+                        </Style>
+                      </DataGridTemplateColumn.HeaderStyle>
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                          <ComboBox SelectedItem="{Binding OcrMode, UpdateSourceTrigger=PropertyChanged}"
+                                    ToolTip="Fast (default): prefer fresh samples for briefly visible lines. Thorough: full OCR passes for hard-to-read static text.">
+                            <models:OcrSpeedMode>Fast</models:OcrSpeedMode>
+                            <models:OcrSpeedMode>Thorough</models:OcrSpeedMode>
+                          </ComboBox>
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                  </DataGrid.Columns>
+                </DataGrid>
+              </DockPanel>
+            </Expander>
+
+            <Expander Header="Applications" IsExpanded="True" Margin="0,0,0,12" ExpandDirection="Down"
+                      Padding="0,6,0,0">
+              <DockPanel Margin="10,4,10,10">
+                <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+                  <Button Content="Add" Width="80" Margin="0,0,8,0" Click="AddApplication_Click" />
+                  <Button Content="Remove" Width="80" Click="RemoveApplication_Click" />
+                </StackPanel>
+                <DataGrid x:Name="ApplicationsGrid"
+                          AutoGenerateColumns="False"
+                          CanUserAddRows="False"
+                          HeadersVisibility="Column"
+                          SelectionMode="Single"
+                          MinHeight="140"
+                          MaxHeight="240"
+                          VerticalScrollBarVisibility="Auto"
+                          PreviewMouseWheel="DataGrid_PreviewMouseWheel">
+                  <DataGrid.Columns>
+                    <DataGridTemplateColumn Header="On" Width="40">
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                          <CheckBox IsChecked="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Header="Application" Width="*">
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                          <DockPanel LastChildFill="True">
+                            <Button DockPanel.Dock="Right" Content="Pick…" Margin="6,0,0,0" Padding="8,2"
+                                    Click="PickApplication_Click" Tag="{Binding}" />
+                            <TextBox Text="{Binding ProcessName, UpdateSourceTrigger=PropertyChanged}" VerticalContentAlignment="Center" />
+                          </DockPanel>
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Header="List" Width="100">
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                          <ComboBox SelectedItem="{Binding ListMode, UpdateSourceTrigger=PropertyChanged}">
+                            <models:ApplicationListMode>Whitelist</models:ApplicationListMode>
+                            <models:ApplicationListMode>Blacklist</models:ApplicationListMode>
+                          </ComboBox>
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Debounce" Binding="{Binding DebounceSeconds, UpdateSourceTrigger=PropertyChanged}" Width="80" />
+                    <DataGridTemplateColumn Header="Triggers" Width="140">
+                      <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                          <ComboBox SelectedItem="{Binding TriggerFilter, UpdateSourceTrigger=PropertyChanged}"
+                                    DropDownOpened="TriggerFilterCombo_DropDownOpened"
+                                    DropDownClosed="TriggerFilterCombo_DropDownClosed"
+                                    ToolTip="All = every trigger; Selected = choose triggers; None = no triggers">
+                            <models:ApplicationTriggerFilter>All</models:ApplicationTriggerFilter>
+                            <models:ApplicationTriggerFilter>Selected</models:ApplicationTriggerFilter>
+                            <models:ApplicationTriggerFilter>None</models:ApplicationTriggerFilter>
+                          </ComboBox>
+                        </DataTemplate>
+                      </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                  </DataGrid.Columns>
+                </DataGrid>
+              </DockPanel>
+            </Expander>
+
+            <GroupBox Header="Capture" Padding="10" Margin="0,0,0,12">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="180" />
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Capture directory" VerticalAlignment="Center" Margin="0,0,0,8" />
+                <TextBox x:Name="CaptureDirectoryBox" Grid.Row="0" Grid.Column="1" Margin="0,0,8,8" />
+                <Button Grid.Row="0" Grid.Column="2" Content="Browse…" Width="80" Margin="0,0,0,8" Click="BrowseCapture_Click" />
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="OCR interval (ms)" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Capture period between screen grabs. Use 250–500ms with Fast OCR for briefly visible terminal lines. Optimize for this PC may change this." />
+                <TextBox x:Name="OcrIntervalBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="Capture period between screen grabs. Use 250–500ms with Fast OCR for briefly visible terminal lines. Optimize for this PC may change this." />
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Fast match threshold" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="For Fast OCR triggers only: how closely OCR text must match the trigger (similarity, not Windows OCR confidence). 100 is strictest; lower is more reactive but may false-fire. Thorough triggers ignore this." />
+                <DockPanel Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8"
+                           ToolTip="For Fast OCR triggers only: how closely OCR text must match the trigger (similarity, not Windows OCR confidence). 100 is strictest; lower is more reactive but may false-fire. Thorough triggers ignore this.">
+                  <TextBlock x:Name="FastMatchThresholdLabel" DockPanel.Dock="Right" Width="44" VerticalAlignment="Center"
+                             TextAlignment="Right" Margin="8,0,0,0" Text="90%" />
+                  <Slider x:Name="FastMatchThresholdSlider"
+                          Minimum="50" Maximum="100"
+                          TickFrequency="5" IsSnapToTickEnabled="True"
+                          SmallChange="5" LargeChange="10"
+                          Value="90"
+                          VerticalAlignment="Center"
+                          ValueChanged="FastMatchThresholdSlider_ValueChanged" />
+                </DockPanel>
+
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="Debounce (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed. Per-application debounce overrides this when that app is foreground." />
+                <TextBox x:Name="DebounceBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed. Per-application debounce overrides this when that app is foreground." />
+
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="Application scope" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Whitelist = only those apps (best for 'ignore everything else'). All minus blacklisted = skip when a fully blacklisted app is foreground, and mask those windows otherwise." />
+                <ComboBox x:Name="ApplicationScopeBox" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="280" HorizontalAlignment="Left"
+                          DisplayMemberPath="Display" SelectedValuePath="Value"
+                          ToolTip="Whitelist = only those apps (best for 'ignore everything else'). All minus blacklisted = skip when a fully blacklisted app is foreground, and mask those windows otherwise." />
+
+                <TextBlock Grid.Row="5" Grid.Column="0" Text="Capture scope" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Monitor = chosen display(s). Foreground window = only the focused app (must stay focused; good for a terminal you are using)." />
+                <ComboBox x:Name="CaptureScopeBox" Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="200" HorizontalAlignment="Left"
+                          ToolTip="Monitor = chosen display(s). Foreground window = only the focused app (must stay focused; good for a terminal you are using)." />
+
+                <TextBlock Grid.Row="6" Grid.Column="0" Text="Screenshot format" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Jpeg is faster to save (default). Png is lossless." />
+                <ComboBox x:Name="ScreenshotFormatBox" Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                          ToolTip="Jpeg is faster to save (default). Png is lossless." />
+
+                <TextBlock Grid.Row="7" Grid.Column="0" Text="Monitor" VerticalAlignment="Center"
+                           ToolTip="Used when capture scope is Monitor. Primary/Specific are fastest. All scans every display (slower; avoid with Fast OCR on multi-monitor)." />
+                <StackPanel Grid.Row="7" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal">
+                  <ComboBox x:Name="MonitorModeBox" Width="140" Margin="0,0,8,0" SelectionChanged="MonitorMode_Changed"
+                            ToolTip="Used when capture scope is Monitor. Primary/Specific are fastest. All scans every display (slower; avoid with Fast OCR on multi-monitor)." />
+                  <ComboBox x:Name="SpecificMonitorBox" Width="280" />
+                </StackPanel>
+              </Grid>
+            </GroupBox>
+
+            <GroupBox Header="Recording" Padding="10" Margin="0,0,0,12">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="180" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Buffer length (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Seconds kept before a trigger (pre-roll)." />
+                <TextBox x:Name="BufferSecondsBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="Seconds kept before a trigger (pre-roll)." />
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Frame rate (FPS)" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="How many frames per second to keep in the buffer." />
+                <TextBox x:Name="RecordFpsBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="How many frames per second to keep in the buffer." />
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Format" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Avi = MJPEG video (default). Gif = animated GIF." />
+                <ComboBox x:Name="RecordFormatBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                          ToolTip="Avi = MJPEG video (default). Gif = animated GIF." />
+
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="JPEG quality" VerticalAlignment="Center"
+                           ToolTip="40–95. Lower = smaller files, more artifacts. Used for the ring buffer and AVI." />
+                <TextBox x:Name="RecordJpegQualityBox" Grid.Row="3" Grid.Column="1" Width="120" HorizontalAlignment="Left"
+                         ToolTip="40–95. Lower = smaller files, more artifacts. Used for the ring buffer and AVI." />
+              </Grid>
+            </GroupBox>
+
+            <GroupBox Header="Screenshot sequence" Padding="10" Margin="0,0,0,12">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="180" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Spacing (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Seconds between stills in a sequence (1–30)." />
+                <TextBox x:Name="SequenceIntervalBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="Seconds between stills in a sequence (1–30)." />
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Before trigger (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="How far back to keep stills before the trigger (0–60)." />
+                <TextBox x:Name="SequenceBeforeBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="How far back to keep stills before the trigger (0–60)." />
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="After trigger (seconds)" VerticalAlignment="Center"
+                           ToolTip="How long to keep capturing stills after the trigger (0–60)." />
+                <TextBox x:Name="SequenceAfterBox" Grid.Row="2" Grid.Column="1" Width="120" HorizontalAlignment="Left"
+                         ToolTip="How long to keep capturing stills after the trigger (0–60)." />
+              </Grid>
+            </GroupBox>
+
+            <GroupBox Header="Behavior" Padding="10" Margin="0,0,0,12">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="180" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <CheckBox x:Name="StartWithWindowsBox" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Content="Start with Windows" Margin="0,0,0,8" />
+                <CheckBox x:Name="StartMonitoringBox" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Content="Start monitoring on launch" Margin="0,0,0,8" />
+                <CheckBox x:Name="DebugJsonBox" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
+                          Content="Debug: save JSON sidecar with each capture" Margin="0,0,0,8"
+                          ToolTip="Writes a .json next to each capture including OCR snippet text. Leave off unless troubleshooting — files can contain secrets." />
+
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="Log level" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Info = normal operation. Debug = extra OCR/match detail in the log files." />
+                <ComboBox x:Name="LogLevelBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" Width="180" HorizontalAlignment="Left"
+                          ToolTip="Info = normal operation. Debug = extra OCR/match detail in the log files." />
+
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="Pause hotkey" VerticalAlignment="Center" Margin="0,0,0,8" />
+                <TextBox x:Name="HotkeyBox" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8" Width="180" HorizontalAlignment="Left"
+                         ToolTip="Example: Ctrl+Shift+P" />
+
+                <TextBlock Grid.Row="5" Grid.Column="0" Text="Retention max age (days)" VerticalAlignment="Center" Margin="0,0,0,8" />
+                <TextBox x:Name="RetentionDaysBox" Grid.Row="5" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="0 = do not delete by age" />
+
+                <TextBlock Grid.Row="6" Grid.Column="0" Text="Retention max files" VerticalAlignment="Center" />
+                <TextBox x:Name="RetentionFilesBox" Grid.Row="6" Grid.Column="1" Width="120" HorizontalAlignment="Left"
+                         ToolTip="0 = do not delete by count" />
+              </Grid>
+            </GroupBox>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Advanced" x:Name="AdvancedTab">
+        <ScrollViewer x:Name="AdvancedScrollViewer" VerticalScrollBarVisibility="Auto" Padding="0,8,0,0">
+          <StackPanel>
+            <TextBlock Text="Performance" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,4" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.75" Margin="0,0,0,12"
+                       Text="Optimize for this PC runs about 10 seconds: it times Very Low→Ultra on test windows and picks the quality knee (where richer OCR stops helping). Review the values below, then Save." />
+
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+              <Button Content="Optimize for this PC…" Width="180" Margin="0,0,8,0"
+                      Click="OptimizeForThisPc_Click"
+                      ToolTip="About 10 seconds. Shows plain and neon test windows, times Very Low→Ultra (3 trials each), picks the P1dB quality knee. Does not save until you click Save." />
+              <Button Content="Reset performance to defaults" Width="200"
+                      Click="ResetPerformance_Click"
+                      ToolTip="Restore Ultra (default) performance knobs into the form without saving." />
             </StackPanel>
-            <DataGrid x:Name="TriggersGrid"
-                      AutoGenerateColumns="False"
-                      CanUserAddRows="False"
-                      HeadersVisibility="Column"
-                      SelectionMode="Single"
-                      MinHeight="160"
-                      MaxHeight="280"
-                      VerticalScrollBarVisibility="Auto"
-                      PreviewMouseWheel="DataGrid_PreviewMouseWheel">
-              <DataGrid.Columns>
-                <DataGridTemplateColumn Header="On" Width="40">
-                  <DataGridTemplateColumn.CellTemplate>
-                    <DataTemplate>
-                      <CheckBox IsChecked="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}"
-                                HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    </DataTemplate>
-                  </DataGridTemplateColumn.CellTemplate>
-                </DataGridTemplateColumn>
-                <DataGridTextColumn Header="Text" Binding="{Binding Text, UpdateSourceTrigger=PropertyChanged}" Width="*" />
-                <DataGridTemplateColumn Header="Match" Width="100">
-                  <DataGridTemplateColumn.CellTemplate>
-                    <DataTemplate>
-                      <ComboBox SelectedItem="{Binding Match, UpdateSourceTrigger=PropertyChanged}">
-                        <models:MatchMode>Contains</models:MatchMode>
-                        <models:MatchMode>Exact</models:MatchMode>
-                        <models:MatchMode>Regex</models:MatchMode>
-                      </ComboBox>
-                    </DataTemplate>
-                  </DataGridTemplateColumn.CellTemplate>
-                </DataGridTemplateColumn>
-                <DataGridTemplateColumn Header="Action" Width="110">
-                  <DataGridTemplateColumn.CellTemplate>
-                    <DataTemplate>
-                      <ComboBox SelectedItem="{Binding Action, UpdateSourceTrigger=PropertyChanged}">
-                        <models:CaptureAction>Screenshot</models:CaptureAction>
-                        <models:CaptureAction>Record</models:CaptureAction>
-                        <models:CaptureAction>Sequence</models:CaptureAction>
-                      </ComboBox>
-                    </DataTemplate>
-                  </DataGridTemplateColumn.CellTemplate>
-                </DataGridTemplateColumn>
-                <DataGridTemplateColumn Header="OCR" Width="90">
-                  <DataGridTemplateColumn.HeaderStyle>
-                    <Style TargetType="DataGridColumnHeader">
-                      <Setter Property="ToolTip"
-                              Value="Fast (default): prefer fresh samples for briefly visible lines. Thorough: full OCR passes for hard-to-read static text." />
-                    </Style>
-                  </DataGridTemplateColumn.HeaderStyle>
-                  <DataGridTemplateColumn.CellTemplate>
-                    <DataTemplate>
-                      <ComboBox SelectedItem="{Binding OcrMode, UpdateSourceTrigger=PropertyChanged}"
-                                ToolTip="Fast (default): prefer fresh samples for briefly visible lines. Thorough: full OCR passes for hard-to-read static text.">
-                        <models:OcrSpeedMode>Fast</models:OcrSpeedMode>
-                        <models:OcrSpeedMode>Thorough</models:OcrSpeedMode>
-                      </ComboBox>
-                    </DataTemplate>
-                  </DataGridTemplateColumn.CellTemplate>
-                </DataGridTemplateColumn>
-              </DataGrid.Columns>
-            </DataGrid>
-          </DockPanel>
-        </Expander>
+            <TextBlock x:Name="CalibrationSummaryText" TextWrapping="Wrap" Margin="0,0,0,16"
+                       Opacity="0.85" Text="Not calibrated on this PC yet." />
 
-        <Expander Header="Applications" IsExpanded="True" Margin="0,0,0,12" ExpandDirection="Down"
-                  Padding="0,6,0,0">
-          <DockPanel Margin="10,4,10,10">
-            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
-              <Button Content="Add" Width="80" Margin="0,0,8,0" Click="AddApplication_Click" />
-              <Button Content="Remove" Width="80" Click="RemoveApplication_Click" />
-            </StackPanel>
-            <DataGrid x:Name="ApplicationsGrid"
-                      AutoGenerateColumns="False"
-                      CanUserAddRows="False"
-                      HeadersVisibility="Column"
-                      SelectionMode="Single"
-                      MinHeight="140"
-                      MaxHeight="240"
-                      VerticalScrollBarVisibility="Auto"
-                      PreviewMouseWheel="DataGrid_PreviewMouseWheel">
-              <DataGrid.Columns>
-                <DataGridTemplateColumn Header="On" Width="40">
-                  <DataGridTemplateColumn.CellTemplate>
-                    <DataTemplate>
-                      <CheckBox IsChecked="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}"
-                                HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    </DataTemplate>
-                  </DataGridTemplateColumn.CellTemplate>
-                </DataGridTemplateColumn>
-                <DataGridTemplateColumn Header="Application" Width="*">
-                  <DataGridTemplateColumn.CellTemplate>
-                    <DataTemplate>
-                      <DockPanel LastChildFill="True">
-                        <Button DockPanel.Dock="Right" Content="Pick…" Margin="6,0,0,0" Padding="8,2"
-                                Click="PickApplication_Click" Tag="{Binding}" />
-                        <TextBox Text="{Binding ProcessName, UpdateSourceTrigger=PropertyChanged}" VerticalContentAlignment="Center" />
-                      </DockPanel>
-                    </DataTemplate>
-                  </DataGridTemplateColumn.CellTemplate>
-                </DataGridTemplateColumn>
-                <DataGridTemplateColumn Header="List" Width="100">
-                  <DataGridTemplateColumn.CellTemplate>
-                    <DataTemplate>
-                      <ComboBox SelectedItem="{Binding ListMode, UpdateSourceTrigger=PropertyChanged}">
-                        <models:ApplicationListMode>Whitelist</models:ApplicationListMode>
-                        <models:ApplicationListMode>Blacklist</models:ApplicationListMode>
-                      </ComboBox>
-                    </DataTemplate>
-                  </DataGridTemplateColumn.CellTemplate>
-                </DataGridTemplateColumn>
-                <DataGridTextColumn Header="Debounce" Binding="{Binding DebounceSeconds, UpdateSourceTrigger=PropertyChanged}" Width="80" />
-                <DataGridTemplateColumn Header="Triggers" Width="140">
-                  <DataGridTemplateColumn.CellTemplate>
-                    <DataTemplate>
-                      <ComboBox SelectedItem="{Binding TriggerFilter, UpdateSourceTrigger=PropertyChanged}"
-                                DropDownOpened="TriggerFilterCombo_DropDownOpened"
-                                DropDownClosed="TriggerFilterCombo_DropDownClosed"
-                                ToolTip="All = every trigger; Selected = choose triggers; None = no triggers">
-                        <models:ApplicationTriggerFilter>All</models:ApplicationTriggerFilter>
-                        <models:ApplicationTriggerFilter>Selected</models:ApplicationTriggerFilter>
-                        <models:ApplicationTriggerFilter>None</models:ApplicationTriggerFilter>
-                      </ComboBox>
-                    </DataTemplate>
-                  </DataGridTemplateColumn.CellTemplate>
-                </DataGridTemplateColumn>
-              </DataGrid.Columns>
-            </DataGrid>
-          </DockPanel>
-        </Expander>
+            <GroupBox Header="OCR quality" Padding="10" Margin="0,0,0,12">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="220" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
 
-        <GroupBox Header="Capture" Padding="10" Margin="0,0,0,12">
-          <Grid>
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="180" />
-              <ColumnDefinition Width="*" />
-              <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <Grid.RowDefinitions>
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="OCR max width (px)" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Downscale width before OCR (960–3840). Higher = better OCR, more CPU." />
+                <TextBox x:Name="OcrMaxWidthBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="Downscale width before OCR (960–3840). Higher = better OCR, more CPU." />
 
-            <TextBlock Grid.Row="0" Grid.Column="0" Text="Capture directory" VerticalAlignment="Center" Margin="0,0,0,8" />
-            <TextBox x:Name="CaptureDirectoryBox" Grid.Row="0" Grid.Column="1" Margin="0,0,8,8" />
-            <Button Grid.Row="0" Grid.Column="2" Content="Browse…" Width="80" Margin="0,0,0,8" Click="BrowseCapture_Click" />
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="OCR upscale (%)" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="100 = none. Try 150–250 for small terminal fonts (100–400)." />
+                <TextBox x:Name="OcrUpscaleBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="100 = none. Try 150–250 for small terminal fonts (100–400)." />
 
-            <TextBlock Grid.Row="1" Grid.Column="0" Text="OCR interval (ms)" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="Capture period between screen grabs. Use 250–500ms with Fast OCR for briefly visible terminal lines." />
-            <TextBox x:Name="OcrIntervalBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                     ToolTip="Capture period between screen grabs. Use 250–500ms with Fast OCR for briefly visible terminal lines." />
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Boost upscale (%)" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Floor for adaptive/neon passes; terminal/tiles/bands scale from this (100–400). Default 200." />
+                <TextBox x:Name="OcrBoostUpscaleBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="Floor for adaptive/neon passes; terminal/tiles/bands scale from this (100–400). Default 200." />
 
-            <TextBlock Grid.Row="2" Grid.Column="0" Text="Fast match threshold" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="For Fast OCR triggers only: how closely OCR text must match the trigger (similarity, not Windows OCR confidence). 100 is strictest; lower is more reactive but may false-fire. Thorough triggers ignore this." />
-            <DockPanel Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8"
-                       ToolTip="For Fast OCR triggers only: how closely OCR text must match the trigger (similarity, not Windows OCR confidence). 100 is strictest; lower is more reactive but may false-fire. Thorough triggers ignore this.">
-              <TextBlock x:Name="FastMatchThresholdLabel" DockPanel.Dock="Right" Width="44" VerticalAlignment="Center"
-                         TextAlignment="Right" Margin="8,0,0,0" Text="90%" />
-              <Slider x:Name="FastMatchThresholdSlider"
-                      Minimum="50" Maximum="100"
-                      TickFrequency="5" IsSnapToTickEnabled="True"
-                      SmallChange="5" LargeChange="10"
-                      Value="90"
-                      VerticalAlignment="Center"
-                      ValueChanged="FastMatchThresholdSlider_ValueChanged" />
-            </DockPanel>
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="Absolute max width (px)" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Hard cap after upscale (960–3840). Keeps boosted OCR from becoming 4K-wide on weak PCs." />
+                <TextBox x:Name="OcrAbsoluteMaxWidthBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="Hard cap after upscale (960–3840). Keeps boosted OCR from becoming 4K-wide on weak PCs." />
 
-            <TextBlock Grid.Row="3" Grid.Column="0" Text="Debounce (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed. Per-application debounce overrides this when that app is foreground." />
-            <TextBox x:Name="DebounceBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                     ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed. Per-application debounce overrides this when that app is foreground." />
+                <CheckBox x:Name="OcrInvertBox" Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2"
+                          Content="Extra invert pass for OCR"
+                          ToolTip="Adds an invert-only OCR pass. Adaptive grayscale contrast and neon boost already run when enabled below; captures stay full color." />
+              </Grid>
+            </GroupBox>
 
-            <TextBlock Grid.Row="4" Grid.Column="0" Text="Application scope" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="Whitelist = only those apps (best for 'ignore everything else'). All minus blacklisted = skip when a fully blacklisted app is foreground, and mask those windows otherwise." />
-            <ComboBox x:Name="ApplicationScopeBox" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="280" HorizontalAlignment="Left"
-                      DisplayMemberPath="Display" SelectedValuePath="Value"
-                      ToolTip="Whitelist = only those apps (best for 'ignore everything else'). All minus blacklisted = skip when a fully blacklisted app is foreground, and mask those windows otherwise." />
+            <GroupBox Header="OCR cascade" Padding="10" Margin="0,0,0,12">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="220" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
 
-            <TextBlock Grid.Row="5" Grid.Column="0" Text="Screenshot format" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="Jpeg is faster to save (default). Png is lossless." />
-            <ComboBox x:Name="ScreenshotFormatBox" Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                      ToolTip="Jpeg is faster to save (default). Png is lossless." />
+                <CheckBox x:Name="OcrEnableAdaptiveBox" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
+                          Content="Enable adaptive contrast pass" Margin="0,0,0,8"
+                          ToolTip="Second OCR pass with contrast stretch + invert." />
+                <CheckBox x:Name="OcrEnableNeonBox" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                          Content="Enable neon high-contrast pass" Margin="0,0,0,8"
+                          ToolTip="Third OCR pass tuned for neon-on-black terminals." />
+                <CheckBox x:Name="OcrEnableTerminalBox" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
+                          Content="Enable terminal ROI passes" Margin="0,0,0,8"
+                          ToolTip="Crop dark terminal-like regions and re-OCR at higher scale." />
 
-            <TextBlock Grid.Row="6" Grid.Column="0" Text="Monitor" VerticalAlignment="Center"
-                       ToolTip="Used when capture scope is Monitor. Primary/Specific are fastest. All scans every display (slower; avoid with Fast OCR on multi-monitor)." />
-            <StackPanel Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal">
-              <ComboBox x:Name="MonitorModeBox" Width="140" Margin="0,0,8,0" SelectionChanged="MonitorMode_Changed"
-                        ToolTip="Used when capture scope is Monitor. Primary/Specific are fastest. All scans every display (slower; avoid with Fast OCR on multi-monitor)." />
-              <ComboBox x:Name="SpecificMonitorBox" Width="280" />
-            </StackPanel>
-          </Grid>
-        </GroupBox>
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="Terminal max regions" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="How many terminal-like crops to OCR (0–4)." />
+                <TextBox x:Name="OcrTerminalMaxRegionsBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="How many terminal-like crops to OCR (0–4)." />
 
-        <GroupBox Header="Recording" Padding="10" Margin="0,0,0,12">
-          <Grid>
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="180" />
-              <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
-            <Grid.RowDefinitions>
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="Max windows (All−blacklist)" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Max windows OCR'd per frame in All Minus Blacklisted mode (1–12)." />
+                <TextBox x:Name="OcrMaxWindowsBox" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="Max windows OCR'd per frame in All Minus Blacklisted mode (1–12)." />
 
-            <TextBlock Grid.Row="0" Grid.Column="0" Text="Buffer length (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="Seconds kept before a trigger (pre-roll)." />
-            <TextBox x:Name="BufferSecondsBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                     ToolTip="Seconds kept before a trigger (pre-roll)." />
+                <TextBlock Grid.Row="5" Grid.Column="0" Text="OCR queue capacity" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Pending frames waiting for OCR (1–4). Takes effect after Save + monitoring restart." />
+                <TextBox x:Name="OcrQueueCapacityBox" Grid.Row="5" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="Pending frames waiting for OCR (1–4). Takes effect after Save + monitoring restart." />
 
-            <TextBlock Grid.Row="1" Grid.Column="0" Text="Frame rate (FPS)" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="How many frames per second to keep in the buffer." />
-            <TextBox x:Name="RecordFpsBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                     ToolTip="How many frames per second to keep in the buffer." />
+                <TextBlock Grid.Row="6" Grid.Column="0" Text="Fast cascade budget (ms)" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Stop searching a frame after this long when only Fast triggers remain (100–30000)." />
+                <TextBox x:Name="OcrCascadeBudgetFastBox" Grid.Row="6" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="Stop searching a frame after this long when only Fast triggers remain (100–30000)." />
 
-            <TextBlock Grid.Row="2" Grid.Column="0" Text="Format" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="Avi = MJPEG video (default). Gif = animated GIF." />
-            <ComboBox x:Name="RecordFormatBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                      ToolTip="Avi = MJPEG video (default). Gif = animated GIF." />
+                <TextBlock Grid.Row="7" Grid.Column="0" Text="Thorough cascade budget (ms)" VerticalAlignment="Center" Margin="0,0,0,8"
+                           ToolTip="Stop searching a frame after this long when Thorough triggers remain (100–60000)." />
+                <TextBox x:Name="OcrCascadeBudgetThoroughBox" Grid.Row="7" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         ToolTip="Stop searching a frame after this long when Thorough triggers remain (100–60000)." />
 
-            <TextBlock Grid.Row="3" Grid.Column="0" Text="JPEG quality" VerticalAlignment="Center"
-                       ToolTip="40–95. Lower = smaller files, more artifacts. Used for the ring buffer and AVI." />
-            <TextBox x:Name="RecordJpegQualityBox" Grid.Row="3" Grid.Column="1" Width="120" HorizontalAlignment="Left"
-                     ToolTip="40–95. Lower = smaller files, more artifacts. Used for the ring buffer and AVI." />
-          </Grid>
-        </GroupBox>
-
-        <GroupBox Header="Screenshot sequence" Padding="10" Margin="0,0,0,12">
-          <Grid>
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="180" />
-              <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
-            <Grid.RowDefinitions>
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-
-            <TextBlock Grid.Row="0" Grid.Column="0" Text="Spacing (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="Seconds between stills in a sequence (1–30)." />
-            <TextBox x:Name="SequenceIntervalBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                     ToolTip="Seconds between stills in a sequence (1–30)." />
-
-            <TextBlock Grid.Row="1" Grid.Column="0" Text="Before trigger (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="How far back to keep stills before the trigger (0–60)." />
-            <TextBox x:Name="SequenceBeforeBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                     ToolTip="How far back to keep stills before the trigger (0–60)." />
-
-            <TextBlock Grid.Row="2" Grid.Column="0" Text="After trigger (seconds)" VerticalAlignment="Center"
-                       ToolTip="How long to keep capturing stills after the trigger (0–60)." />
-            <TextBox x:Name="SequenceAfterBox" Grid.Row="2" Grid.Column="1" Width="120" HorizontalAlignment="Left"
-                     ToolTip="How long to keep capturing stills after the trigger (0–60)." />
-          </Grid>
-        </GroupBox>
-
-        <GroupBox Header="OCR quality" Padding="10" Margin="0,0,0,12">
-          <Grid>
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="180" />
-              <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
-            <Grid.RowDefinitions>
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-
-            <TextBlock Grid.Row="0" Grid.Column="0" Text="Capture scope" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="Monitor = chosen display(s). Foreground window = only the focused app (must stay focused; good for a terminal you are using)." />
-            <ComboBox x:Name="CaptureScopeBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8" Width="200" HorizontalAlignment="Left"
-                      ToolTip="Monitor = chosen display(s). Foreground window = only the focused app (must stay focused; good for a terminal you are using)." />
-
-            <TextBlock Grid.Row="1" Grid.Column="0" Text="OCR max width (px)" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="Higher = better OCR, more CPU. 3840 ≈ little/no downscale on 4K." />
-            <TextBox x:Name="OcrMaxWidthBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                     ToolTip="Higher = better OCR, more CPU. 3840 ≈ little/no downscale on 4K." />
-
-            <TextBlock Grid.Row="2" Grid.Column="0" Text="OCR upscale (%)" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="100 = none. Try 150–250 for small terminal fonts (max 400)." />
-            <TextBox x:Name="OcrUpscaleBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                     ToolTip="100 = none. Try 150–250 for small terminal fonts (max 400)." />
-
-            <CheckBox x:Name="OcrInvertBox" Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2"
-                      Content="Extra invert pass for OCR"
-                      ToolTip="Adds an invert-only OCR pass. Adaptive grayscale contrast and neon boost already run automatically; captures stay full color." />
-          </Grid>
-        </GroupBox>
-
-        <GroupBox Header="Behavior" Padding="10" Margin="0,0,0,12">
-          <Grid>
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="180" />
-              <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
-            <Grid.RowDefinitions>
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-
-            <CheckBox x:Name="StartWithWindowsBox" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Content="Start with Windows" Margin="0,0,0,8" />
-            <CheckBox x:Name="StartMonitoringBox" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Content="Start monitoring on launch" Margin="0,0,0,8" />
-            <CheckBox x:Name="DebugJsonBox" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
-                      Content="Debug: save JSON sidecar with each capture" Margin="0,0,0,8"
-                      ToolTip="Writes a .json next to each capture including OCR snippet text. Leave off unless troubleshooting — files can contain secrets." />
-
-            <TextBlock Grid.Row="3" Grid.Column="0" Text="Log level" VerticalAlignment="Center" Margin="0,0,0,8"
-                       ToolTip="Info = normal operation. Debug = extra OCR/match detail in the log files." />
-            <ComboBox x:Name="LogLevelBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" Width="180" HorizontalAlignment="Left"
-                      ToolTip="Info = normal operation. Debug = extra OCR/match detail in the log files." />
-
-            <TextBlock Grid.Row="4" Grid.Column="0" Text="Pause hotkey" VerticalAlignment="Center" Margin="0,0,0,8" />
-            <TextBox x:Name="HotkeyBox" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8" Width="180" HorizontalAlignment="Left"
-                     ToolTip="Example: Ctrl+Shift+P" />
-
-            <TextBlock Grid.Row="5" Grid.Column="0" Text="Retention max age (days)" VerticalAlignment="Center" Margin="0,0,0,8" />
-            <TextBox x:Name="RetentionDaysBox" Grid.Row="5" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                     ToolTip="0 = do not delete by age" />
-
-            <TextBlock Grid.Row="6" Grid.Column="0" Text="Retention max files" VerticalAlignment="Center" />
-            <TextBox x:Name="RetentionFilesBox" Grid.Row="6" Grid.Column="1" Width="120" HorizontalAlignment="Left"
-                     ToolTip="0 = do not delete by count" />
-          </Grid>
-        </GroupBox>
-      </StackPanel>
-    </ScrollViewer>
+                <CheckBox x:Name="OcrApplyBudgetWhenIdleBox" Grid.Row="8" Grid.Column="0" Grid.ColumnSpan="2"
+                          Content="Apply cascade budget even when idle (no backlog)" Margin="0,0,0,8"
+                          ToolTip="Off (High default): budgets only when newer frames are waiting. On: always cap cascade time." />
+                <CheckBox x:Name="UseBackgroundPriorityBox" Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="2"
+                          Content="Run capture/OCR at background priority"
+                          ToolTip="BelowNormal thread priority so foreground apps stay responsive. Takes effect after Save + monitoring restart." />
+              </Grid>
+            </GroupBox>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+    </TabControl>
   </DockPanel>
 </Window>

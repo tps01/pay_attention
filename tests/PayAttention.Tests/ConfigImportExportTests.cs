@@ -104,4 +104,44 @@ public sealed class ConfigImportExportTests
         Assert.ThrowsAny<Exception>(() =>
             service.ImportFrom(Path.Combine(Path.GetTempPath(), "pa_missing_" + Guid.NewGuid().ToString("N") + ".json")));
     }
+
+    [Fact]
+    public void Import_clamps_performance_knobs_and_allows_ocr_max_width_960()
+    {
+        var service = new ConfigService();
+        var path = Path.Combine(Path.GetTempPath(), "pa_cfg_" + Guid.NewGuid().ToString("N") + ".json");
+
+        try
+        {
+            File.WriteAllText(path, """
+                {
+                  "ocrMaxWidth": 1280,
+                  "ocrBoostUpscalePercent": 50,
+                  "ocrAbsoluteMaxWidth": 99999,
+                  "ocrTerminalMaxRegions": 9,
+                  "ocrMaxWindows": 0,
+                  "ocrQueueCapacity": 8,
+                  "ocrCascadeBudgetFastMs": 10,
+                  "ocrCascadeBudgetThoroughMs": 999999,
+                  "triggers": []
+                }
+                """);
+
+            var imported = service.ImportFrom(path);
+            Assert.Equal(1280, imported.OcrMaxWidth);
+            Assert.Equal(100, imported.OcrBoostUpscalePercent);
+            Assert.Equal(3840, imported.OcrAbsoluteMaxWidth);
+            Assert.Equal(4, imported.OcrTerminalMaxRegions);
+            Assert.Equal(1, imported.OcrMaxWindows);
+            Assert.Equal(4, imported.OcrQueueCapacity);
+            Assert.Equal(100, imported.OcrCascadeBudgetFastMs);
+            Assert.Equal(60_000, imported.OcrCascadeBudgetThoroughMs);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
 }
+

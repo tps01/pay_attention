@@ -28,6 +28,7 @@ public partial class SettingsWindow : Window
     private readonly ScreenGrabber _grabber = new();
     private bool _loadingUi;
     private bool _handlingTriggerFilter;
+    private PerformanceProfileKind _appliedPerformanceProfile = PerformanceProfileKind.Ultra;
 
     public event EventHandler<AppConfig>? ConfigSaved;
 
@@ -105,7 +106,23 @@ public partial class SettingsWindow : Window
         SequenceAfterBox.Text = config.SequenceAfterSeconds.ToString();
         OcrMaxWidthBox.Text = config.OcrMaxWidth.ToString();
         OcrUpscaleBox.Text = config.OcrUpscalePercent.ToString();
+        OcrBoostUpscaleBox.Text = config.OcrBoostUpscalePercent.ToString();
+        OcrAbsoluteMaxWidthBox.Text = config.OcrAbsoluteMaxWidth.ToString();
         OcrInvertBox.IsChecked = config.OcrInvertColors;
+        OcrEnableAdaptiveBox.IsChecked = config.OcrEnableAdaptive;
+        OcrEnableNeonBox.IsChecked = config.OcrEnableNeon;
+        OcrEnableTerminalBox.IsChecked = config.OcrEnableTerminal;
+        OcrTerminalMaxRegionsBox.Text = config.OcrTerminalMaxRegions.ToString();
+        OcrMaxWindowsBox.Text = config.OcrMaxWindows.ToString();
+        OcrQueueCapacityBox.Text = config.OcrQueueCapacity.ToString();
+        OcrCascadeBudgetFastBox.Text = config.OcrCascadeBudgetFastMs.ToString();
+        OcrCascadeBudgetThoroughBox.Text = config.OcrCascadeBudgetThoroughMs.ToString();
+        OcrApplyBudgetWhenIdleBox.IsChecked = config.OcrApplyBudgetWhenIdle;
+        UseBackgroundPriorityBox.IsChecked = config.UseBackgroundPriority;
+        CalibrationSummaryText.Text = string.IsNullOrWhiteSpace(config.LastCalibrationSummary)
+            ? "Not calibrated on this PC yet."
+            : config.LastCalibrationSummary;
+        _appliedPerformanceProfile = config.AppliedPerformanceProfile;
         CaptureScopeBox.SelectedItem = config.CaptureScope;
         ApplicationScopeBox.SelectedValue = config.ApplicationScope;
         StartWithWindowsBox.IsChecked = config.StartWithWindows;
@@ -119,6 +136,60 @@ public partial class SettingsWindow : Window
         MonitorModeBox.SelectedItem = config.MonitorSelection;
         RefreshMonitors(config.SpecificMonitorIndex);
         MonitorMode_Changed(null, null!);
+    }
+
+    public void ShowAdvancedTab()
+    {
+        SettingsTabs.SelectedItem = AdvancedTab;
+    }
+
+    /// <summary>Fill the form from a calibration result without saving.</summary>
+    public void ApplyCalibrationResult(AppConfig config)
+    {
+        ApplyConfigToUi(config);
+        ShowAdvancedTab();
+    }
+
+    private async void OptimizeForThisPc_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            CommitGrids();
+            var current = BuildConfigFromUi();
+            var result = await OptimizeForThisPcRunner.RunAsync(this, current, _monitor, _logger);
+            if (result is null)
+                return;
+
+            ApplyConfigToUi(result.Config);
+            ShowAdvancedTab();
+            MessageBox.Show(
+                $"Chose {PerformanceProfiles.DisplayName(result.Chosen)}.\n\n{result.Summary}\n\nReview Advanced settings, then click Save.",
+                "pay_attention",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Optimize for this PC failed", ex);
+            MessageBox.Show(ex.Message, "pay_attention", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ResetPerformance_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            CommitGrids();
+            var config = BuildConfigFromUi();
+            PerformanceProfiles.Apply(config, PerformanceProfileKind.Ultra);
+            config.LastCalibrationSummary = "Reset to Ultra defaults (not saved yet).";
+            ApplyConfigToUi(config);
+            ShowAdvancedTab();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "pay_attention", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
 
@@ -492,6 +563,7 @@ public partial class SettingsWindow : Window
             _configService.Save(imported);
             AutostartService.SetEnabled(imported.StartWithWindows, Environment.ProcessPath ?? string.Empty);
             _monitor.UpdateConfig(imported);
+            _monitor.RestartIfRunning();
             _logger.MinLevel = imported.LogLevel;
             ConfigSaved?.Invoke(this, imported);
             _logger.Info($"Config imported from {dialog.FileName}");
@@ -520,6 +592,7 @@ public partial class SettingsWindow : Window
             ApplyConfigToUi(config);
             AutostartService.SetEnabled(config.StartWithWindows, Environment.ProcessPath ?? string.Empty);
             _monitor.UpdateConfig(config);
+            _monitor.RestartIfRunning();
             _logger.MinLevel = config.LogLevel;
             ConfigSaved?.Invoke(this, config);
             _logger.Info("Settings saved.");
@@ -564,6 +637,20 @@ public partial class SettingsWindow : Window
             throw new InvalidOperationException("OCR max width must be an integer.");
         if (!int.TryParse(OcrUpscaleBox.Text, out var ocrUpscale))
             throw new InvalidOperationException("OCR upscale percent must be an integer.");
+        if (!int.TryParse(OcrBoostUpscaleBox.Text, out var ocrBoost))
+            throw new InvalidOperationException("OCR boost upscale percent must be an integer.");
+        if (!int.TryParse(OcrAbsoluteMaxWidthBox.Text, out var ocrAbsoluteMax))
+            throw new InvalidOperationException("OCR absolute max width must be an integer.");
+        if (!int.TryParse(OcrTerminalMaxRegionsBox.Text, out var ocrTerminalRegions))
+            throw new InvalidOperationException("Terminal max regions must be an integer.");
+        if (!int.TryParse(OcrMaxWindowsBox.Text, out var ocrMaxWindows))
+            throw new InvalidOperationException("OCR max windows must be an integer.");
+        if (!int.TryParse(OcrQueueCapacityBox.Text, out var ocrQueueCapacity))
+            throw new InvalidOperationException("OCR queue capacity must be an integer.");
+        if (!int.TryParse(OcrCascadeBudgetFastBox.Text, out var ocrBudgetFast))
+            throw new InvalidOperationException("Fast cascade budget must be an integer.");
+        if (!int.TryParse(OcrCascadeBudgetThoroughBox.Text, out var ocrBudgetThorough))
+            throw new InvalidOperationException("Thorough cascade budget must be an integer.");
         if (!int.TryParse(RecordJpegQualityBox.Text, out var jpegQuality))
             throw new InvalidOperationException("JPEG quality must be an integer.");
 
@@ -616,6 +703,10 @@ public partial class SettingsWindow : Window
                 app.TriggerFilter = ApplicationTriggerFilter.None;
         }
 
+        var summary = CalibrationSummaryText.Text?.Trim() ?? string.Empty;
+        if (string.Equals(summary, "Not calibrated on this PC yet.", StringComparison.Ordinal))
+            summary = string.Empty;
+
         return new AppConfig
         {
             OcrIntervalMs = ocrInterval,
@@ -634,6 +725,20 @@ public partial class SettingsWindow : Window
             ApplicationScope = applicationScope,
             OcrInvertColors = OcrInvertBox.IsChecked == true,
             OcrUpscalePercent = ocrUpscale,
+            OcrBoostUpscalePercent = ocrBoost,
+            OcrAbsoluteMaxWidth = ocrAbsoluteMax,
+            OcrEnableAdaptive = OcrEnableAdaptiveBox.IsChecked == true,
+            OcrEnableNeon = OcrEnableNeonBox.IsChecked == true,
+            OcrEnableTerminal = OcrEnableTerminalBox.IsChecked == true,
+            OcrTerminalMaxRegions = ocrTerminalRegions,
+            OcrMaxWindows = ocrMaxWindows,
+            OcrQueueCapacity = ocrQueueCapacity,
+            OcrCascadeBudgetFastMs = ocrBudgetFast,
+            OcrCascadeBudgetThoroughMs = ocrBudgetThorough,
+            OcrApplyBudgetWhenIdle = OcrApplyBudgetWhenIdleBox.IsChecked == true,
+            UseBackgroundPriority = UseBackgroundPriorityBox.IsChecked == true,
+            AppliedPerformanceProfile = _appliedPerformanceProfile,
+            LastCalibrationSummary = summary,
             CaptureDirectory = string.IsNullOrWhiteSpace(CaptureDirectoryBox.Text)
                 ? _configService.DefaultCaptureDirectory
                 : CaptureDirectoryBox.Text.Trim(),
@@ -681,8 +786,9 @@ public partial class SettingsWindow : Window
             return;
 
         e.Handled = true;
-        var offset = SettingsScrollViewer.VerticalOffset - e.Delta;
-        SettingsScrollViewer.ScrollToVerticalOffset(offset);
+        var scroll = SettingsTabs.SelectedItem == AdvancedTab ? AdvancedScrollViewer : SettingsScrollViewer;
+        var offset = scroll.VerticalOffset - e.Delta;
+        scroll.ScrollToVerticalOffset(offset);
     }
 
     private static bool CanScrollVertically(ScrollViewer scroll, int delta)

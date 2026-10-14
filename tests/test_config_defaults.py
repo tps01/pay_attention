@@ -58,7 +58,7 @@ def test_ocr_interval_and_debounce_defaults():
 
 def test_ocr_max_width_defaults():
     assert OCR_MAX_WIDTH_DEFAULT >= OCR_MAX_WIDTH_MIN
-    assert OCR_MAX_WIDTH_MIN == 1600
+    assert OCR_MAX_WIDTH_MIN == 960
     assert OCR_MAX_WIDTH_DEFAULT == 1920
 
 
@@ -103,7 +103,8 @@ def test_sample_triggers_disabled_by_default():
 
 
 def test_ocr_max_width_clamp():
-    assert clamp_ocr_max_width(1280) == OCR_MAX_WIDTH_MIN
+    assert clamp_ocr_max_width(800) == OCR_MAX_WIDTH_MIN
+    assert clamp_ocr_max_width(1280) == 1280
     assert clamp_ocr_max_width(1920) == 1920
     assert clamp_ocr_max_width(99999) == OCR_MAX_WIDTH_MAX
 

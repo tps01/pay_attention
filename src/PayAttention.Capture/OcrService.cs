@@ -10,6 +10,9 @@ namespace PayAttention.Capture;
 public sealed class OcrService
 {
     private readonly OcrEngine? _engine;
+    /// <summary>Grow-only packed BGRA scratch for ToSoftwareBitmap; reused across RecognizeAsync calls.</summary>
+    private byte[] _packedBuffer = Array.Empty<byte>();
+    private readonly object _bufferLock = new();
 
     public OcrService()
     {
@@ -31,7 +34,7 @@ public sealed class OcrService
         return result.Text ?? string.Empty;
     }
 
-    private static SoftwareBitmap ToSoftwareBitmap(Bitmap bitmap)
+    private SoftwareBitmap ToSoftwareBitmap(Bitmap bitmap)
     {
         Bitmap? owned = null;
         var source = bitmap;
@@ -53,15 +56,24 @@ public sealed class OcrService
                 var stride = data.Stride;
                 var height = data.Height;
                 var width = data.Width;
-                var packed = new byte[width * height * 4];
-                for (var y = 0; y < height; y++)
-                {
-                    Marshal.Copy(data.Scan0 + y * stride, packed, y * width * 4, width * 4);
-                }
+                var needed = width * height * 4;
 
-                var softwareBitmap = new SoftwareBitmap(BitmapPixelFormat.Bgra8, width, height, BitmapAlphaMode.Ignore);
-                softwareBitmap.CopyFromBuffer(packed.AsBuffer());
-                return softwareBitmap;
+                lock (_bufferLock)
+                {
+                    if (_packedBuffer.Length < needed)
+                        _packedBuffer = new byte[needed];
+
+                    var packed = _packedBuffer;
+                    for (var y = 0; y < height; y++)
+                    {
+                        Marshal.Copy(data.Scan0 + y * stride, packed, y * width * 4, width * 4);
+                    }
+
+                    var softwareBitmap = new SoftwareBitmap(BitmapPixelFormat.Bgra8, width, height, BitmapAlphaMode.Ignore);
+                    // Slice to exact size — CopyFromBuffer rejects a longer IBuffer.
+                    softwareBitmap.CopyFromBuffer(packed.AsBuffer(0, needed));
+                    return softwareBitmap;
+                }
             }
             finally
             {

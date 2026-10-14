@@ -125,6 +125,10 @@ public partial class App : Application
         var menu = new ContextMenuStrip();
         menu.Items.Add(_startStopItem);
         menu.Items.Add(new ToolStripMenuItem("Settings...", null, (_, _) => OpenSettings()));
+        menu.Items.Add(new ToolStripMenuItem(
+            "Optimize for this PC...",
+            null,
+            async (_, _) => await OptimizeForThisPcFromTrayAsync()));
         menu.Items.Add(new ToolStripMenuItem("Open captures folder", null, (_, _) => OpenCaptures()));
         menu.Items.Add(new ToolStripMenuItem("Open logs folder", null, (_, _) => OpenLogs()));
         menu.Items.Add(new ToolStripSeparator());
@@ -208,11 +212,13 @@ public partial class App : Application
     private static string Truncate(string text) =>
         text.Length <= 63 ? text : text[..63];
 
-    private void OpenSettings()
+    private void OpenSettings(bool showAdvanced = false)
     {
         if (_settingsWindow is { IsVisible: true })
         {
             _settingsWindow.Activate();
+            if (showAdvanced)
+                _settingsWindow.ShowAdvancedTab();
             return;
         }
 
@@ -226,6 +232,40 @@ public partial class App : Application
         };
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         _settingsWindow.Show();
+        if (showAdvanced)
+            _settingsWindow.ShowAdvancedTab();
+    }
+
+    private async Task OptimizeForThisPcFromTrayAsync()
+    {
+        try
+        {
+            OpenSettings(showAdvanced: true);
+            if (_settingsWindow is null)
+                return;
+
+            var result = await OptimizeForThisPcRunner.RunAsync(
+                _settingsWindow,
+                _config,
+                _monitor,
+                _logger);
+            if (result is null)
+                return;
+
+            // Fill Advanced for review; user still clicks Save.
+            _settingsWindow.ApplyCalibrationResult(result.Config);
+            MessageBox.Show(
+                _settingsWindow,
+                $"Chose {PerformanceProfiles.DisplayName(result.Chosen)}.\n\n{result.Summary}\n\nReview Advanced settings, then click Save.",
+                "pay_attention",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Optimize for this PC (tray) failed", ex);
+            MessageBox.Show(ex.Message, "pay_attention", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void OpenCaptures()

@@ -114,4 +114,39 @@ public class OcrCascadePolicyTests
             cutShortForBacklog: true,
             pendingBehind: 0));
     }
+
+    [Fact]
+    public void NeedsDeepCascade_false_when_only_fast_triggers_remain()
+    {
+        var fast = Trigger("alpha", OcrSpeedMode.Fast);
+        var thorough = Trigger("beta", OcrSpeedMode.Thorough);
+        var config = ConfigWithTriggers(fast, thorough);
+        var matched = new HashSet<Guid> { thorough.Id };
+
+        Assert.False(OcrCascadePolicy.NeedsDeepCascade(matched, config));
+        Assert.True(OcrCascadePolicy.UnmatchedAreAllFast(matched, config));
+    }
+
+    [Fact]
+    public void NeedsDeepCascade_true_when_a_thorough_trigger_is_still_missing()
+    {
+        var fast = Trigger("alpha", OcrSpeedMode.Fast);
+        var thorough = Trigger("beta", OcrSpeedMode.Thorough);
+        var config = ConfigWithTriggers(fast, thorough);
+        var matched = new HashSet<Guid> { fast.Id };
+
+        Assert.True(OcrCascadePolicy.NeedsDeepCascade(matched, config));
+        Assert.False(OcrCascadePolicy.UnmatchedAreAllFast(matched, config));
+    }
+
+    [Fact]
+    public void AllEnabledMatched_from_cached_ids()
+    {
+        var a = Trigger("alpha");
+        var b = Trigger("beta");
+        var config = ConfigWithTriggers(a, b);
+
+        Assert.False(OcrCascadePolicy.AllEnabledMatched(new HashSet<Guid> { a.Id }, config));
+        Assert.True(OcrCascadePolicy.AllEnabledMatched(new HashSet<Guid> { a.Id, b.Id }, config));
+    }
 }

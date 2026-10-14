@@ -210,10 +210,35 @@ public static class ApplicationScopeEvaluator
             ProcessName = "PayAttention",
             ListMode = ApplicationListMode.Blacklist,
             DebounceSeconds = 30,
-            TriggerFilter = ApplicationTriggerFilter.All,
+            // Mask settings UI; do not skip the whole OCR cycle while Settings is focused
+            // (All would pause monitoring on other apps/monitors).
+            TriggerFilter = ApplicationTriggerFilter.None,
             TriggerIds = []
         }
     ];
+
+    /// <summary>
+    /// Older defaults used TriggerFilter.All for PayAttention, which skipped every OCR
+    /// cycle while Settings had focus. Promote those rows to mask-only (None).
+    /// </summary>
+    public static void MigratePayAttentionSettingsBlacklist(AppConfig config)
+    {
+        foreach (var app in config.Applications ?? [])
+        {
+            if (!app.Enabled || app.ListMode != ApplicationListMode.Blacklist)
+                continue;
+            if (!string.Equals(
+                    NormalizeProcessName(app.ProcessName),
+                    "payattention",
+                    StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (ResolveTriggerFilter(app) != ApplicationTriggerFilter.All)
+                continue;
+
+            app.TriggerFilter = ApplicationTriggerFilter.None;
+            app.TriggerIds = [];
+        }
+    }
 
     public static string FormatTriggersSummary(ApplicationConfig app, IEnumerable<TriggerConfig> triggers)
     {

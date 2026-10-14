@@ -21,15 +21,6 @@ public sealed class TriggerFiredEventArgs : EventArgs
 
 public sealed class CaptureMonitor : IDisposable
 {
-    /// <summary>Fast unmatched + backlog: prefer fresher frames after a short first-tier try.</summary>
-    private static readonly TimeSpan OcrCascadeBudgetBacklogFast = TimeSpan.FromMilliseconds(400);
-
-    /// <summary>
-    /// Thorough unmatched + backlog: deep enough for ROI/tiles/bands, but still bail so
-    /// scroll-era frames cannot monopolize the worker past a late inject.
-    /// </summary>
-    private static readonly TimeSpan OcrCascadeBudgetBacklogThorough = TimeSpan.FromMilliseconds(8000);
-
     private readonly ScreenGrabber _grabber = new();
     private readonly OcrService _ocr = new();
     private readonly CaptureWriter _writer = new();
@@ -37,14 +28,24 @@ public sealed class CaptureMonitor : IDisposable
     private readonly FrameRingBuffer _ringBuffer;
     private readonly FrameRingBuffer _sequenceRing;
     private readonly AppLogger _logger;
+    private readonly PhaseProfiler _profiler = new();
     private readonly object _configLock = new();
 
     private AppConfig _config;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
     private OcrFrameQueue? _ocrQueue;
+    private long _lastProfileFlushTimestamp = Stopwatch.GetTimestamp();
     private bool _paused;
     private bool _disposed;
+    /// <summary>Force a full Grab after AllowResample or FG change.</summary>
+    private bool _forceFullGrab = true;
+    /// <summary>Last capture cycle skipped enqueue (scene unchanged).</summary>
+    private bool _lastEnqueueSkipped;
+    private string? _lastCaptureForeground;
+    private int _skippedGrabCount;
+    /// <summary>Still probe the screen at least every N skipped intervals when quiet.</summary>
+    private const int MaxSkippedGrabs = 4;
     /// <summary>Last whitelist process that held OS focus (survives focus-lock steals).</summary>
     private string? _stickyWhitelistForeground;
     private DateTimeOffset _lastForegroundPulseUtc = DateTimeOffset.MinValue;
@@ -103,11 +104,55 @@ public sealed class CaptureMonitor : IDisposable
         _paused = false;
         _uiContext = SynchronizationContext.Current;
         _stickyWhitelistForeground = null;
+        _lastProfileFlushTimestamp = Stopwatch.GetTimestamp();
+        _forceFullGrab = true;
+        _lastEnqueueSkipped = false;
+        _lastCaptureForeground = null;
+        _skippedGrabCount = 0;
         _cts = new CancellationTokenSource();
-        _ocrQueue = new OcrFrameQueue();
-        _loopTask = Task.Run(() => RunPipelineAsync(_cts.Token));
+        int queueCapacity;
+        bool backgroundPriority;
+        lock (_configLock)
+        {
+            queueCapacity = _config.OcrQueueCapacity;
+            backgroundPriority = _config.UseBackgroundPriority;
+        }
+
+        _ocrQueue = new OcrFrameQueue(queueCapacity);
+        _loopTask = Task.Run(async () =>
+        {
+            if (backgroundPriority)
+            {
+                try
+                {
+                    Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+                }
+                catch
+                {
+                    // Priority is best-effort on locked-down images.
+                }
+            }
+
+            await RunPipelineAsync(_cts.Token).ConfigureAwait(false);
+        });
         RaiseStatus("Monitoring", "OCR monitoring started.");
-        _logger.Info("Monitoring started.");
+        _logger.Info(
+            $"Monitoring started (queue={queueCapacity}, backgroundPriority={backgroundPriority}).");
+    }
+
+    /// <summary>
+    /// Stop then Start so queue capacity and worker priority pick up the latest config.
+    /// No-op when monitoring is not running.
+    /// </summary>
+    public void RestartIfRunning()
+    {
+        if (!IsRunning)
+            return;
+        var wasPaused = _paused;
+        Stop();
+        Start();
+        if (wasPaused)
+            SetPaused(true);
     }
 
     public void Stop()
@@ -134,6 +179,7 @@ public sealed class CaptureMonitor : IDisposable
         _ringBuffer.Clear();
         _sequenceRing.Clear();
         _fireGate.Reset();
+        FlushProfile("stop");
         RaiseStatus("Stopped", "Monitoring stopped.");
         _logger.Info("Monitoring stopped.");
     }
@@ -211,9 +257,38 @@ public sealed class CaptureMonitor : IDisposable
                     continue;
                 }
 
+                var nowUtc = DateTimeOffset.UtcNow;
+                var needsRecordRing = config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Record);
+                var needsSequenceRing = config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Sequence);
+                var ringsNeedFrame =
+                    (needsRecordRing && _ringBuffer.WouldAccept(nowUtc)) ||
+                    (needsSequenceRing && _sequenceRing.WouldAccept(nowUtc));
+                var fgNorm = ApplicationScopeEvaluator.NormalizeProcessName(foregroundProcess);
+                var fgChanged = !string.Equals(_lastCaptureForeground, fgNorm, StringComparison.OrdinalIgnoreCase);
+                // Quiet desktop: skip full Grab while the last scene was unchanged, unless
+                // rings need a sample, resample was requested, FG changed, or we hit the probe cap.
+                if (!_forceFullGrab &&
+                    !ringsNeedFrame &&
+                    !fgChanged &&
+                    _lastEnqueueSkipped &&
+                    _skippedGrabCount < MaxSkippedGrabs)
+                {
+                    _skippedGrabCount++;
+                    MaybeFlushProfile(config);
+                    await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
+                    continue;
+                }
+
+                _forceFullGrab = false;
+                _skippedGrabCount = 0;
+                _lastCaptureForeground = fgNorm;
+
+                var grabStart = Stopwatch.GetTimestamp();
                 using var frame = Grab(config);
+                _profiler.Record("grab", grabStart, _logger);
                 if (frame is null)
                 {
+                    MaybeFlushProfile(config);
                     await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
                     continue;
                 }
@@ -221,21 +296,26 @@ public sealed class CaptureMonitor : IDisposable
                 var maskNames = ApplicationScopeEvaluator.GetBlacklistProcessNamesToMask(config);
                 if (maskNames.Count > 0)
                 {
+                    var maskStart = Stopwatch.GetTimestamp();
                     var masked = _grabber.MaskProcessWindows(frame.Bitmap, frame.ScreenBounds, maskNames);
+                    _profiler.Record("mask", maskStart, _logger);
                     if (masked == 0)
                         _logger.Warn(
                             $"Blacklist mask: no window overlap with capture bounds ({frame.ScreenBounds.Width}x{frame.ScreenBounds.Height} @({frame.ScreenBounds.X},{frame.ScreenBounds.Y})) for: {string.Join(", ", maskNames)}");
                 }
 
-                var needsRecordRing = config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Record);
-                if (needsRecordRing)
-                    _ringBuffer.TryAdd(frame.Bitmap, frame.Timestamp, config.RecordJpegQuality);
+                if (needsRecordRing || needsSequenceRing)
+                {
+                    var ringStart = Stopwatch.GetTimestamp();
+                    if (needsRecordRing)
+                        _ringBuffer.TryAdd(frame.Bitmap, frame.Timestamp, config.RecordJpegQuality);
+                    if (needsSequenceRing)
+                        _sequenceRing.TryAdd(frame.Bitmap, frame.Timestamp, config.RecordJpegQuality);
+                    _profiler.Record("ring", ringStart, _logger);
+                }
 
-                var needsSequenceRing = config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Sequence);
-                if (needsSequenceRing)
-                    _sequenceRing.TryAdd(frame.Bitmap, frame.Timestamp, config.RecordJpegQuality);
-
-                queue.TryEnqueueIfChanged(frame, foregroundProcess);
+                var enqueued = queue.TryEnqueueIfChanged(frame, foregroundProcess, _profiler, _logger);
+                _lastEnqueueSkipped = !enqueued;
 
                 retentionCounter++;
                 if (retentionCounter % 60 == 0)
@@ -258,6 +338,7 @@ public sealed class CaptureMonitor : IDisposable
 
             try
             {
+                MaybeFlushProfile(config);
                 await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -296,6 +377,7 @@ public sealed class CaptureMonitor : IDisposable
                 var published = new HashSet<Guid>();
                 void PublishMatches(string ocrText)
                 {
+                    var matchStart = Stopwatch.GetTimestamp();
                     var found = TriggerMatcher.FindMatches(ocrText, config.Triggers, config.FastMatchThresholdPercent)
                         .Where(m => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, m.Trigger.Id))
                         .ToList();
@@ -316,6 +398,7 @@ public sealed class CaptureMonitor : IDisposable
                         _logger.Debug($"Trigger '{match.Trigger.Text}' suppressed (debounce or unchanged scene).");
                         return false;
                     });
+                    _profiler.Record("match", matchStart, _logger);
 
                     foreach (var match in fires)
                     {
@@ -350,8 +433,8 @@ public sealed class CaptureMonitor : IDisposable
                 // another listed app's phrase without being allowed to fire it.
                 // AllMinusBlacklisted: one pane's hit must not silence OCR while other panes'
                 // triggers are still missing (multi-pane Alpha then Beta).
-                var allMatched = AllAllowedMatched(text, config, foregroundProcess);
-                var anyMatched = AnyAllowedMatched(text, config, foregroundProcess);
+                var allMatched = TimedAllAllowedMatched(text, config, foregroundProcess);
+                var anyMatched = TimedAnyAllowedMatched(text, config, foregroundProcess);
                 var anyForQuiet = config.ApplicationScope == ApplicationScopeMode.AllMinusBlacklisted
                     ? allMatched
                     : anyMatched;
@@ -360,7 +443,10 @@ public sealed class CaptureMonitor : IDisposable
                         anyForQuiet,
                         ocr.CutShortForBacklog,
                         queue.PendingCount))
+                {
                     queue.AllowResample();
+                    _forceFullGrab = true;
+                }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -499,7 +585,7 @@ public sealed class CaptureMonitor : IDisposable
     {
         pendingBehind ??= static () => 0;
         var cascadeClock = Stopwatch.StartNew();
-        var cascade = new CascadeContext(config, cascadeClock, pendingBehind);
+        var cascade = new CascadeContext(config, cascadeClock, pendingBehind, _profiler, _logger);
 
         // AllMinusBlacklisted: OCR each non-masked visible window crop so side-by-side
         // panes (e.g. Alpha + Beta) are recoverable; keep the full masked frame for save.
@@ -507,7 +593,7 @@ public sealed class CaptureMonitor : IDisposable
             config.CaptureScope == CaptureScope.Monitor)
         {
             var windowResult = await RecognizeNonBlacklistedWindowsAsync(
-                config, frame, pendingBehind, token, onText).ConfigureAwait(false);
+                config, frame, cascade, token, onText).ConfigureAwait(false);
             if (windowResult is not null)
                 return windowResult.Value;
         }
@@ -525,12 +611,12 @@ public sealed class CaptureMonitor : IDisposable
                     var soFar = string.Join("\n", parts);
                     // Only stop the All-pass when every trigger matched — never because
                     // monitor 0 burned the Fast time budget (each monitor gets its own clock).
-                    if (AllEnabledMatched(soFar, config))
+                    if (TimedAllEnabledMatched(soFar, config))
                         break;
 
                     // Fresh cascade budget per monitor; backlog pressure only on the first.
                     var monitorPending = parts.Count == 0 ? pendingBehind : static () => 0;
-                    var monitorCascade = new CascadeContext(config, Stopwatch.StartNew(), monitorPending);
+                    var monitorCascade = new CascadeContext(config, Stopwatch.StartNew(), monitorPending, _profiler, _logger);
 
                     // Crop from the queued virtual-desktop frame — never live re-grab, so
                     // match text and the saved screenshot share the same frozen moment.
@@ -545,7 +631,7 @@ public sealed class CaptureMonitor : IDisposable
                     cutShort |= part.CutShortForBacklog;
 
                     var joinedMonitors = string.Join("\n", parts);
-                    if (AllEnabledMatched(joinedMonitors, config))
+                    if (TimedAllEnabledMatched(joinedMonitors, config))
                         return new OcrFrameResult(joinedMonitors, CutShortForBacklog: false);
                 }
 
@@ -563,7 +649,7 @@ public sealed class CaptureMonitor : IDisposable
     private async Task<OcrFrameResult?> RecognizeNonBlacklistedWindowsAsync(
         AppConfig config,
         CapturedFrame frame,
-        Func<int> pendingBehind,
+        CascadeContext sharedCascade,
         CancellationToken token,
         Action<string>? onText)
     {
@@ -572,6 +658,7 @@ public sealed class CaptureMonitor : IDisposable
         if (windows.Count == 0)
             return null;
 
+        var maxWindows = Math.Clamp(config.OcrMaxWindows, 1, 12);
         var frameArea = frame.ScreenBounds.Width * (long)frame.ScreenBounds.Height;
         // Preserve EnumWindows Z-order (top → bottom). TopMost fixture panes sort above
         // ordinary browser windows; do not re-rank by area (that OCR'd huge Chrome first).
@@ -586,7 +673,7 @@ public sealed class CaptureMonitor : IDisposable
             if (frameArea > 0 && (area >= frameArea * 3 / 4 || area < frameArea / 200))
                 continue;
             targets.Add((hwnd, overlap));
-            if (targets.Count >= 12)
+            if (targets.Count >= maxWindows)
                 break;
         }
 
@@ -595,14 +682,17 @@ public sealed class CaptureMonitor : IDisposable
 
         var parts = new List<string>(targets.Count);
         var cutShort = false;
+        // One cascade clock for the whole frame — later windows inherit elapsed time.
         for (var i = 0; i < targets.Count; i++)
         {
             var soFar = string.Join("\n", parts);
-            if (AllEnabledMatched(soFar, config))
+            if (TimedAllEnabledMatched(soFar, config))
                 break;
-
-            var windowPending = i == 0 ? pendingBehind : static () => 0;
-            var windowCascade = new CascadeContext(config, Stopwatch.StartNew(), windowPending);
+            if (IsCascadeOverBudget(sharedCascade))
+            {
+                cutShort = true;
+                break;
+            }
 
             // PrintWindow each HWND for OCR: CopyFromScreen crops often miss TextBox
             // scroll paints that PrintWindow still recovers (same as whitelist path).
@@ -616,13 +706,13 @@ public sealed class CaptureMonitor : IDisposable
             if (slice is null)
                 continue;
 
-            var part = await RecognizeBitmapMultiPassAsync(slice, windowCascade, token, onText)
+            var part = await RecognizeBitmapMultiPassAsync(slice, sharedCascade, token, onText)
                 .ConfigureAwait(false);
             parts.Add(part.Text);
             cutShort |= part.CutShortForBacklog;
 
             var joined = string.Join("\n", parts);
-            if (AllEnabledMatched(joined, config))
+            if (TimedAllEnabledMatched(joined, config))
                 return new OcrFrameResult(joined, CutShortForBacklog: false);
         }
 
@@ -639,54 +729,97 @@ public sealed class CaptureMonitor : IDisposable
     {
         var chunks = new List<string>(8);
         var config = cascade.Config;
+        var match = cascade.Match;
+        var boost = PassUpscale(config, 200);
 
         // Baseline pass at configured scale (color, unmodified for OCR aside from scale).
-        await AddOcrPassAsync(chunks, bitmap, config.OcrMaxWidth, config.OcrUpscalePercent, invert: false, OcrPrepMode.None, token)
+        await AddOcrPassAsync(chunks, bitmap, config, config.OcrUpscalePercent, invert: false, OcrPrepMode.None, "ocr.baseline", token)
             .ConfigureAwait(false);
+        var joined = Report(chunks, onText);
+        match.Observe(joined);
+        if (match.AllEnabledMatched())
+            return new OcrFrameResult(joined, false);
+        if (IsCascadeOverBudget(cascade))
+            return new OcrFrameResult(joined, true);
 
         // Gray → adaptive stretch → invert (dark-terminal / low-contrast boost).
-        var boost = Math.Max(config.OcrUpscalePercent, 200);
-        await AddOcrPassAsync(chunks, bitmap, config.OcrMaxWidth, boost, invert: true, OcrPrepMode.AdaptiveContrast, token)
-            .ConfigureAwait(false);
+        if (config.OcrEnableAdaptive)
+        {
+            await AddOcrPassAsync(chunks, bitmap, config, boost, invert: true, OcrPrepMode.AdaptiveContrast, "ocr.adaptive", token)
+                .ConfigureAwait(false);
+            joined = Report(chunks, onText);
+            match.Observe(joined);
+            if (match.AllEnabledMatched())
+                return new OcrFrameResult(joined, false);
+            if (IsCascadeOverBudget(cascade))
+                return new OcrFrameResult(joined, true);
+        }
 
         // Neon-biased high-contrast without forcing invert (complements adaptive path).
-        await AddOcrPassAsync(chunks, bitmap, config.OcrMaxWidth, boost, invert: false, OcrPrepMode.NeonHighContrast, token)
-            .ConfigureAwait(false);
+        if (config.OcrEnableNeon)
+        {
+            await AddOcrPassAsync(chunks, bitmap, config, boost, invert: false, OcrPrepMode.NeonHighContrast, "ocr.neon", token)
+                .ConfigureAwait(false);
+            joined = Report(chunks, onText);
+            match.Observe(joined);
+            if (match.AllEnabledMatched())
+                return new OcrFrameResult(joined, false);
+            if (IsCascadeOverBudget(cascade))
+                return new OcrFrameResult(joined, true);
+        }
 
         if (config.OcrInvertColors && config.OcrUpscalePercent != boost)
         {
-            await AddOcrPassAsync(chunks, bitmap, config.OcrMaxWidth, config.OcrUpscalePercent, invert: true, OcrPrepMode.None, token)
+            await AddOcrPassAsync(chunks, bitmap, config, config.OcrUpscalePercent, invert: true, OcrPrepMode.None, "ocr.invert", token)
                 .ConfigureAwait(false);
+            joined = Report(chunks, onText);
+            match.Observe(joined);
+            if (match.AllEnabledMatched())
+                return new OcrFrameResult(joined, false);
+            if (IsCascadeOverBudget(cascade))
+                return new OcrFrameResult(joined, true);
         }
 
-        var joined = Report(chunks, onText);
-        if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
-            return new OcrFrameResult(joined, false);
-        if (IsCascadeOverBudget(joined, cascade))
-            return new OcrFrameResult(joined, true);
-
         // Only when triggers are still missing: crop neon-terminal ROIs and re-OCR hard.
-        await RecognizeTerminalRegionsAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
-        joined = Report(chunks, onText);
-        if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
+        if (config.OcrEnableTerminal && config.OcrTerminalMaxRegions > 0)
+        {
+            await RecognizeTerminalRegionsAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
+            joined = Report(chunks, onText);
+            match.Observe(joined);
+            if (match.AllEnabledMatched())
+                return new OcrFrameResult(joined, false);
+            if (IsCascadeOverBudget(cascade))
+                return new OcrFrameResult(joined, true);
+        }
+
+        // Fast-only misses: skip expensive tiles/bands (Thorough unmatched still dig deeper).
+        if (!match.NeedsDeepCascade())
             return new OcrFrameResult(joined, false);
-        if (IsCascadeOverBudget(joined, cascade))
-            return new OcrFrameResult(joined, true);
 
         await RecognizeTilesAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
         joined = Report(chunks, onText);
-        if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
+        match.Observe(joined);
+        if (match.AllEnabledMatched())
             return new OcrFrameResult(joined, false);
-        if (IsCascadeOverBudget(joined, cascade))
+        if (IsCascadeOverBudget(cascade))
             return new OcrFrameResult(joined, true);
 
         // Dense terminal lines: OCR overlapping horizontal bands at high upscale.
         await RecognizeHorizontalBandsAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
         joined = Report(chunks, onText);
-        if (AllEnabledMatched(joined, cascade.Config, cascade.FastMatchThresholdPercent))
+        match.Observe(joined);
+        if (match.AllEnabledMatched())
             return new OcrFrameResult(joined, false);
-        return new OcrFrameResult(joined, IsCascadeOverBudget(joined, cascade));
+        return new OcrFrameResult(joined, IsCascadeOverBudget(cascade));
     }
+
+    /// <summary>
+    /// Upscale for a pass: max(user upscale, boost scaled from High's 200% floors).
+    /// </summary>
+    private static int PassUpscale(AppConfig config, int floorRelativeTo200) =>
+        Math.Max(
+            config.OcrUpscalePercent,
+            PerformanceProfiles.ScaledUpscale(config.OcrBoostUpscalePercent, floorRelativeTo200));
 
     private static string Report(List<string> chunks, Action<string>? onText)
     {
@@ -695,19 +828,64 @@ public sealed class CaptureMonitor : IDisposable
         return joined;
     }
 
+    private sealed class CascadeMatchState
+    {
+        private readonly HashSet<Guid> _matchedIds = new();
+        private readonly AppConfig _config;
+        private readonly int _threshold;
+        private readonly PhaseProfiler _profiler;
+        private readonly AppLogger _logger;
+
+        public CascadeMatchState(
+            AppConfig config,
+            int threshold,
+            PhaseProfiler profiler,
+            AppLogger logger)
+        {
+            _config = config;
+            _threshold = threshold;
+            _profiler = profiler;
+            _logger = logger;
+        }
+
+        public void Observe(string text)
+        {
+            var start = Stopwatch.GetTimestamp();
+            foreach (var match in TriggerMatcher.FindMatches(text, _config.Triggers, _threshold))
+                _matchedIds.Add(match.Trigger.Id);
+            _profiler.Record("match", start, _logger);
+        }
+
+        public bool AllEnabledMatched() =>
+            OcrCascadePolicy.AllEnabledMatched(_matchedIds, _config);
+
+        public bool NeedsDeepCascade() =>
+            OcrCascadePolicy.NeedsDeepCascade(_matchedIds, _config);
+
+        public bool UnmatchedAreAllFast() =>
+            OcrCascadePolicy.UnmatchedAreAllFast(_matchedIds, _config);
+    }
+
     private readonly struct CascadeContext
     {
         private readonly Func<int> _pendingBehind;
 
-        public CascadeContext(AppConfig config, Stopwatch clock, Func<int> pendingBehind)
+        public CascadeContext(
+            AppConfig config,
+            Stopwatch clock,
+            Func<int> pendingBehind,
+            PhaseProfiler profiler,
+            AppLogger logger)
         {
             Config = config;
             Clock = clock;
             _pendingBehind = pendingBehind;
+            Match = new CascadeMatchState(config, config.FastMatchThresholdPercent, profiler, logger);
         }
 
         public AppConfig Config { get; }
         public Stopwatch Clock { get; }
+        public CascadeMatchState Match { get; }
         /// <summary>Frames waiting behind the one currently being OCR'd (re-read each check).</summary>
         public int PendingBehind => _pendingBehind();
         public int FastMatchThresholdPercent => Config.FastMatchThresholdPercent;
@@ -716,74 +894,83 @@ public sealed class CaptureMonitor : IDisposable
     private static IEnumerable<TriggerConfig> EnabledTriggers(AppConfig config) =>
         config.Triggers.Where(t => t.Enabled && !string.IsNullOrWhiteSpace(t.Text));
 
-    /// <summary>
-    /// Stop when every enabled trigger matched (screenshot+record with the same text still stop together).
-    /// </summary>
-    private static bool AllEnabledMatched(string text, AppConfig config) =>
-        OcrCascadePolicy.AllEnabledMatched(text, config);
-
-    private static bool AllEnabledMatched(string text, AppConfig config, int fastMatchThresholdPercent) =>
-        OcrCascadePolicy.AllEnabledMatched(text, config, fastMatchThresholdPercent);
+    private bool TimedAllEnabledMatched(string text, AppConfig config)
+    {
+        var start = Stopwatch.GetTimestamp();
+        var result = OcrCascadePolicy.AllEnabledMatched(text, config);
+        _profiler.Record("match", start, _logger);
+        return result;
+    }
 
     /// <summary>
     /// Like AllEnabledMatched, but only triggers allowed for the current foreground row.
     /// Empty allowed set (whitelist FG outside list) counts as complete so we stay quiet.
     /// </summary>
-    private static bool AllAllowedMatched(string text, AppConfig config, string? foregroundProcess)
+    private bool TimedAllAllowedMatched(string text, AppConfig config, string? foregroundProcess)
     {
-        var allowed = EnabledTriggers(config)
-            .Where(t => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, t.Id))
-            .ToList();
-        if (allowed.Count == 0)
-            return true;
+        var start = Stopwatch.GetTimestamp();
+        try
+        {
+            var allowed = EnabledTriggers(config)
+                .Where(t => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, t.Id))
+                .ToList();
+            if (allowed.Count == 0)
+                return true;
 
-        var matchedIds = TriggerMatcher.FindMatches(text, config.Triggers, config.FastMatchThresholdPercent)
-            .Select(m => m.Trigger.Id)
-            .ToHashSet();
-        return allowed.All(t => matchedIds.Contains(t.Id));
+            var matchedIds = TriggerMatcher.FindMatches(text, config.Triggers, config.FastMatchThresholdPercent)
+                .Select(m => m.Trigger.Id)
+                .ToHashSet();
+            return allowed.All(t => matchedIds.Contains(t.Id));
+        }
+        finally
+        {
+            _profiler.Record("match", start, _logger);
+        }
     }
 
-    private static bool AnyAllowedMatched(string text, AppConfig config, string? foregroundProcess)
+    private bool TimedAnyAllowedMatched(string text, AppConfig config, string? foregroundProcess)
     {
-        var allowed = EnabledTriggers(config)
-            .Where(t => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, t.Id))
-            .ToList();
-        if (allowed.Count == 0)
-            return true;
+        var start = Stopwatch.GetTimestamp();
+        try
+        {
+            var allowed = EnabledTriggers(config)
+                .Where(t => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, t.Id))
+                .ToList();
+            if (allowed.Count == 0)
+                return true;
 
-        var matchedIds = TriggerMatcher.FindMatches(text, config.Triggers, config.FastMatchThresholdPercent)
-            .Select(m => m.Trigger.Id)
-            .ToHashSet();
-        return allowed.Any(t => matchedIds.Contains(t.Id));
+            var matchedIds = TriggerMatcher.FindMatches(text, config.Triggers, config.FastMatchThresholdPercent)
+                .Select(m => m.Trigger.Id)
+                .ToHashSet();
+            return allowed.Any(t => matchedIds.Contains(t.Id));
+        }
+        finally
+        {
+            _profiler.Record("match", start, _logger);
+        }
     }
 
     /// <summary>
-    /// When newer frames are already queued, cut the cascade short so OCR can catch up
-    /// (e.g. scroll noise after a shot inject before a later REC fixture). Idle workers
-    /// (no backlog) always run the full cascade — Fast and Thorough alike.
+    /// Cut the cascade short under backlog (or always, when OcrApplyBudgetWhenIdle) so OCR
+    /// can catch up. Ultra keeps idle workers uncapped; leaner profiles apply budgets always.
     /// </summary>
     private static bool ShouldApplyCascadeBudget(CascadeContext cascade) =>
-        cascade.PendingBehind > 0;
+        cascade.Config.OcrApplyBudgetWhenIdle || cascade.PendingBehind > 0;
 
-    private static TimeSpan CascadeBudgetFor(string text, CascadeContext cascade)
+    private static TimeSpan CascadeBudgetFor(CascadeContext cascade) =>
+        TimeSpan.FromMilliseconds(
+            cascade.Match.UnmatchedAreAllFast()
+                ? cascade.Config.OcrCascadeBudgetFastMs
+                : cascade.Config.OcrCascadeBudgetThoroughMs);
+
+    private static bool IsCascadeOverBudget(CascadeContext cascade) =>
+        ShouldApplyCascadeBudget(cascade) && cascade.Clock.Elapsed >= CascadeBudgetFor(cascade);
+
+    private static bool ShouldStopCascade(string text, CascadeContext cascade)
     {
-        var matchedIds = TriggerMatcher.FindMatches(text, cascade.Config.Triggers, cascade.FastMatchThresholdPercent)
-            .Select(m => m.Trigger.Id)
-            .ToHashSet();
-        var unmatched = EnabledTriggers(cascade.Config).Where(t => !matchedIds.Contains(t.Id)).ToList();
-        if (unmatched.Count == 0)
-            return OcrCascadeBudgetBacklogFast;
-        return unmatched.All(t => t.OcrMode == OcrSpeedMode.Fast)
-            ? OcrCascadeBudgetBacklogFast
-            : OcrCascadeBudgetBacklogThorough;
+        cascade.Match.Observe(text);
+        return cascade.Match.AllEnabledMatched() || IsCascadeOverBudget(cascade);
     }
-
-    private static bool IsCascadeOverBudget(string text, CascadeContext cascade) =>
-        ShouldApplyCascadeBudget(cascade) && cascade.Clock.Elapsed >= CascadeBudgetFor(text, cascade);
-
-    private static bool ShouldStopCascade(string text, CascadeContext cascade) =>
-        AllEnabledMatched(text, cascade.Config, cascade.FastMatchThresholdPercent) ||
-        IsCascadeOverBudget(text, cascade);
 
     private async Task RecognizeTerminalRegionsAsync(
         List<string> chunks,
@@ -792,9 +979,9 @@ public sealed class CaptureMonitor : IDisposable
         CancellationToken token)
     {
         var config = cascade.Config;
-        var regions = ImageHelpers.FindTerminalLikeRegions(bitmap);
-        var scale = Math.Max(config.OcrUpscalePercent, 300);
-        var hiScale = Math.Max(config.OcrUpscalePercent, 400);
+        var regions = ImageHelpers.FindTerminalLikeRegions(bitmap, maxRegions: config.OcrTerminalMaxRegions);
+        var scale = PassUpscale(config, 300);
+        var hiScale = PassUpscale(config, 400);
         foreach (var region in regions)
         {
             var joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
@@ -803,19 +990,19 @@ public sealed class CaptureMonitor : IDisposable
 
             token.ThrowIfCancellationRequested();
             using var crop = bitmap.Clone(region, bitmap.PixelFormat);
-            await AddOcrPassAsync(chunks, crop, config.OcrMaxWidth, scale, invert: true, OcrPrepMode.NeonHighContrast, token)
+            await AddOcrPassAsync(chunks, crop, config, scale, invert: true, OcrPrepMode.NeonHighContrast, "ocr.terminal", token)
                 .ConfigureAwait(false);
             joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
             if (ShouldStopCascade(joined, cascade))
                 return;
 
-            await AddOcrPassAsync(chunks, crop, config.OcrMaxWidth, scale, invert: false, OcrPrepMode.AdaptiveContrast, token)
+            await AddOcrPassAsync(chunks, crop, config, scale, invert: false, OcrPrepMode.AdaptiveContrast, "ocr.terminal", token)
                 .ConfigureAwait(false);
             joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
             if (ShouldStopCascade(joined, cascade))
                 return;
 
-            await AddOcrPassAsync(chunks, crop, config.OcrMaxWidth, hiScale, invert: true, OcrPrepMode.NeonHighContrast, token)
+            await AddOcrPassAsync(chunks, crop, config, hiScale, invert: true, OcrPrepMode.NeonHighContrast, "ocr.terminal", token)
                 .ConfigureAwait(false);
             joined = string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
             if (ShouldStopCascade(joined, cascade))
@@ -834,11 +1021,11 @@ public sealed class CaptureMonitor : IDisposable
         CancellationToken token)
     {
         var config = cascade.Config;
-        var regions = ImageHelpers.FindTerminalLikeRegions(bitmap);
+        var regions = ImageHelpers.FindTerminalLikeRegions(bitmap, maxRegions: config.OcrTerminalMaxRegions);
         if (regions.Count == 0)
             regions = [new Rectangle(0, 0, bitmap.Width, bitmap.Height)];
 
-        var scale = Math.Max(config.OcrUpscalePercent, 350);
+        var scale = PassUpscale(config, 350);
         var bandPasses = 0;
         const int maxBandPasses = 8;
 
@@ -864,7 +1051,7 @@ public sealed class CaptureMonitor : IDisposable
                     continue;
 
                 using var band = bitmap.Clone(new Rectangle(region.Left, y, region.Width, h), bitmap.PixelFormat);
-                await AddOcrPassAsync(chunks, band, config.OcrMaxWidth, scale, invert: true, OcrPrepMode.AdaptiveContrast, token)
+                await AddOcrPassAsync(chunks, band, config, scale, invert: true, OcrPrepMode.AdaptiveContrast, "ocr.bands", token)
                     .ConfigureAwait(false);
                 bandPasses++;
             }
@@ -885,7 +1072,7 @@ public sealed class CaptureMonitor : IDisposable
         var tileH = Math.Max(240, (bitmap.Height + overlap * (grid - 1)) / grid);
         var stepX = Math.Max(1, tileW - overlap);
         var stepY = Math.Max(1, tileH - overlap);
-        var scale = Math.Max(config.OcrUpscalePercent, 250);
+        var scale = PassUpscale(config, 250);
 
         var tiles = new List<Rectangle>(maxTiles);
         for (var y = 0; y < bitmap.Height && tiles.Count < maxTiles; y += stepY)
@@ -909,7 +1096,7 @@ public sealed class CaptureMonitor : IDisposable
 
             token.ThrowIfCancellationRequested();
             using var tile = bitmap.Clone(rect, bitmap.PixelFormat);
-            await AddOcrPassAsync(chunks, tile, config.OcrMaxWidth, scale, invert: false, OcrPrepMode.AdaptiveContrast, token)
+            await AddOcrPassAsync(chunks, tile, config, scale, invert: false, OcrPrepMode.AdaptiveContrast, "ocr.tiles", token)
                 .ConfigureAwait(false);
         }
 
@@ -922,7 +1109,7 @@ public sealed class CaptureMonitor : IDisposable
 
             token.ThrowIfCancellationRequested();
             using var tile = bitmap.Clone(rect, bitmap.PixelFormat);
-            await AddOcrPassAsync(chunks, tile, config.OcrMaxWidth, scale, invert: true, OcrPrepMode.AdaptiveContrast, token)
+            await AddOcrPassAsync(chunks, tile, config, scale, invert: true, OcrPrepMode.AdaptiveContrast, "ocr.tiles", token)
                 .ConfigureAwait(false);
         }
     }
@@ -934,25 +1121,38 @@ public sealed class CaptureMonitor : IDisposable
     private async Task AddOcrPassAsync(
         List<string> chunks,
         Bitmap bitmap,
-        int maxWidth,
+        AppConfig config,
         int upscalePercent,
         bool invert,
         OcrPrepMode prepMode,
+        string phase,
         CancellationToken token)
     {
         Bitmap? prepBmp = null;
+        var passStart = Stopwatch.GetTimestamp();
         try
         {
+            var prepStart = Stopwatch.GetTimestamp();
             prepBmp = ImageHelpers.ApplyOcrPrep(bitmap, prepMode);
             var source = prepBmp ?? bitmap;
+            using var prepared = ImageHelpers.PrepareForOcr(
+                source,
+                config.OcrMaxWidth,
+                upscalePercent,
+                invert,
+                config.OcrAbsoluteMaxWidth);
+            _profiler.Record("ocr.prep", prepStart, _logger);
 
-            using var prepared = ImageHelpers.PrepareForOcr(source, maxWidth, upscalePercent, invert);
+            var recognizeStart = Stopwatch.GetTimestamp();
             var text = await _ocr.RecognizeAsync(prepared, token).ConfigureAwait(false);
+            _profiler.Record("ocr.recognize", recognizeStart, _logger);
+
             if (!string.IsNullOrWhiteSpace(text))
                 chunks.Add(text);
         }
         finally
         {
+            _profiler.Record(phase, passStart, _logger);
             prepBmp?.Dispose();
         }
     }
@@ -970,7 +1170,7 @@ public sealed class CaptureMonitor : IDisposable
     {
         var triggerText = match.Trigger.Text;
         // StatusChanged logs this at Info and App shows an early tray balloon.
-        RaiseStatus("Processing", $"Potential trigger observed, processing… ('{triggerText}')");
+        RaiseStatus("Processing", $"Potential trigger observed, processing... ('{triggerText}')");
 
         var snippet = ocrText.Length <= 280 ? ocrText : ocrText[..280];
         var sidecar = new CaptureSidecar
@@ -1004,7 +1204,7 @@ public sealed class CaptureMonitor : IDisposable
             ? sequenceFramesAtDequeue ?? _sequenceRing.Snapshot()
             : null;
 
-        RaiseStatus("Saving", $"Saving '{triggerText}'…");
+        RaiseStatus("Saving", $"Saving '{triggerText}'...");
 
         var cancelToken = _cts?.Token ?? CancellationToken.None;
 
@@ -1015,11 +1215,13 @@ public sealed class CaptureMonitor : IDisposable
                 string path;
                 if (action == CaptureAction.Record)
                 {
+                    var writeStart = Stopwatch.GetTimestamp();
                     if (recordFrames is null || recordFrames.Count == 0)
                     {
                         sidecar.Action = CaptureAction.Screenshot;
                         path = _writer.WriteScreenshot(
                             clone, sidecar, captureDirectory, screenshotFormat, jpegQuality, saveJson);
+                        _profiler.Record("write", writeStart, _logger);
                         _logger.Warn($"Record buffer empty for '{triggerText}', wrote screenshot instead.");
                     }
                     else
@@ -1034,10 +1236,12 @@ public sealed class CaptureMonitor : IDisposable
                             screenshotFormat,
                             jpegQuality,
                             saveJson);
+                        _profiler.Record("write", writeStart, _logger);
                     }
                 }
                 else if (action == CaptureAction.Sequence)
                 {
+                    var writeStart = Stopwatch.GetTimestamp();
                     path = _writer.WriteScreenshotSequence(
                         sequenceFrames ?? Array.Empty<BufferedFrame>(),
                         clone,
@@ -1046,6 +1250,7 @@ public sealed class CaptureMonitor : IDisposable
                         screenshotFormat,
                         jpegQuality,
                         saveJson);
+                    _profiler.Record("write", writeStart, _logger);
 
                     if (sequenceAfterSeconds > 0)
                     {
@@ -1069,9 +1274,12 @@ public sealed class CaptureMonitor : IDisposable
                             if (cancelToken.IsCancellationRequested)
                                 break;
 
+                            var postGrabStart = Stopwatch.GetTimestamp();
                             using var postFrame = Grab(config);
+                            _profiler.Record("grab", postGrabStart, _logger);
                             if (postFrame is null)
                                 break;
+                            var stillStart = Stopwatch.GetTimestamp();
                             _writer.WriteSequenceStill(
                                 path,
                                 triggerTime,
@@ -1079,21 +1287,24 @@ public sealed class CaptureMonitor : IDisposable
                                 postFrame.Bitmap,
                                 screenshotFormat,
                                 jpegQuality);
+                            _profiler.Record("write", stillStart, _logger);
                             nextAt = nextAt.AddSeconds(sequenceIntervalSeconds);
                         }
                     }
                 }
                 else
                 {
+                    var writeStart = Stopwatch.GetTimestamp();
                     path = _writer.WriteScreenshot(
                         clone, sidecar, captureDirectory, screenshotFormat, jpegQuality, saveJson);
+                    _profiler.Record("write", writeStart, _logger);
                 }
 
                 var displayName = action == CaptureAction.Sequence
                     ? Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
                     : Path.GetFileName(path);
                 _logger.Info($"Trigger '{triggerText}' fired ({sidecar.Action}) -> {path}");
-                RaiseStatus("Triggered", $"{triggerText} → {displayName}");
+                RaiseStatus("Triggered", $"{triggerText} -> {displayName}");
                 TriggerFired?.Invoke(this, new TriggerFiredEventArgs
                 {
                     TriggerText = triggerText,
@@ -1111,6 +1322,34 @@ public sealed class CaptureMonitor : IDisposable
                 clone.Dispose();
             }
         }, cancelToken);
+    }
+
+    private static readonly TimeSpan ProfileFlushInterval = TimeSpan.FromSeconds(30);
+
+    private void MaybeFlushProfile(AppConfig config)
+    {
+        var now = Stopwatch.GetTimestamp();
+        var elapsed = (now - _lastProfileFlushTimestamp) / (double)Stopwatch.Frequency;
+        if (elapsed < ProfileFlushInterval.TotalSeconds)
+            return;
+
+        _lastProfileFlushTimestamp = now;
+        FlushProfile("30s", config);
+    }
+
+    private void FlushProfile(string windowLabel, AppConfig? config = null)
+    {
+        _lastProfileFlushTimestamp = Stopwatch.GetTimestamp();
+        AppConfig cfg;
+        if (config is not null)
+            cfg = config;
+        else
+            lock (_configLock)
+                cfg = _config;
+
+        var pending = _ocrQueue?.PendingCount ?? 0;
+        var context = PhaseProfiler.FormatCaptureContext(cfg, pending);
+        _profiler.FlushTo(_logger, windowLabel, context);
     }
 
     private void RaiseStatus(string status, string? detail)

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Threading.Channels;
 using PayAttention.Core.Services;
@@ -42,12 +43,22 @@ internal sealed class OcrFrameQueue : IDisposable
     /// or when the foreground process changed (same pixels, different Selected triggers).
     /// Returns false if skipped or the channel is completed.
     /// On overflow, oldest frames are dropped so the worker prefers fresher samples.
+    /// When <paramref name="profiler"/> is provided, records <c>enqueue.hash</c> and
+    /// <c>enqueue.clone</c> (clone only when a frame is queued).
     /// </summary>
-    public bool TryEnqueueIfChanged(CapturedFrame frame, string? foregroundProcess)
+    public bool TryEnqueueIfChanged(
+        CapturedFrame frame,
+        string? foregroundProcess,
+        PhaseProfiler? profiler = null,
+        AppLogger? logger = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        var hashStart = Stopwatch.GetTimestamp();
         var fingerprint = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
+        if (profiler is not null && logger is not null)
+            profiler.Record("enqueue.hash", hashStart, logger);
+
         var fg = ApplicationScopeEvaluator.NormalizeProcessName(foregroundProcess);
         lock (_fingerprintLock)
         {
@@ -61,6 +72,7 @@ internal sealed class OcrFrameQueue : IDisposable
             _lastEnqueuedForeground = fg;
         }
 
+        var cloneStart = Stopwatch.GetTimestamp();
         var queued = new OcrQueuedFrame(
             (Bitmap)frame.Bitmap.Clone(),
             frame.Timestamp,
@@ -80,9 +92,13 @@ internal sealed class OcrFrameQueue : IDisposable
 
             // Completed or raced empty while "full" — drop this frame.
             queued.Dispose();
+            if (profiler is not null && logger is not null)
+                profiler.Record("enqueue.clone", cloneStart, logger);
             return false;
         }
 
+        if (profiler is not null && logger is not null)
+            profiler.Record("enqueue.clone", cloneStart, logger);
         return true;
     }
 

@@ -309,8 +309,15 @@ public static class ImageHelpers
     /// Locate regions that look like dark terminals with bright green/amber text,
     /// so small console overlays can be OCR'd without the rest of the desktop noise.
     /// </summary>
-    public static List<Rectangle> FindTerminalLikeRegions(Bitmap source, int minSize = 120)
+    public static List<Rectangle> FindTerminalLikeRegions(
+        Bitmap source,
+        int minSize = 120,
+        int maxRegions = 4)
     {
+        maxRegions = Math.Clamp(maxRegions, 0, 32);
+        if (maxRegions == 0)
+            return [];
+
         const int cell = 48;
         var cols = Math.Max(1, (source.Width + cell - 1) / cell);
         var rows = Math.Max(1, (source.Height + cell - 1) / cell);
@@ -404,7 +411,7 @@ public static class ImageHelpers
         // Prefer larger regions first; cap count for performance.
         return regions
             .OrderByDescending(r => r.Width * r.Height)
-            .Take(4)
+            .Take(maxRegions)
             .ToList();
     }
 
@@ -435,10 +442,16 @@ public static class ImageHelpers
     }
 
     /// <summary>
-    /// Prepares a bitmap for OCR: downscale to maxWidth, optional upscale, optional invert.
+    /// Prepares a bitmap for OCR: downscale to maxWidth, optional upscale, optional invert,
+    /// then hard-cap width at <paramref name="absoluteMaxWidth"/> (0 = no hard cap).
     /// Caller owns the returned bitmap. Does not mutate <paramref name="source"/>.
     /// </summary>
-    public static Bitmap PrepareForOcr(Bitmap source, int maxWidth, int upscalePercent, bool invertColors)
+    public static Bitmap PrepareForOcr(
+        Bitmap source,
+        int maxWidth,
+        int upscalePercent,
+        bool invertColors,
+        int absoluteMaxWidth = 0)
     {
         Bitmap current = Downscale(source, maxWidth);
         try
@@ -448,6 +461,13 @@ public static class ImageHelpers
                 var upscaled = Upscale(current, upscalePercent);
                 current.Dispose();
                 current = upscaled;
+            }
+
+            if (absoluteMaxWidth > 0 && current.Width > absoluteMaxWidth)
+            {
+                var capped = Downscale(current, absoluteMaxWidth);
+                current.Dispose();
+                current = capped;
             }
 
             if (invertColors)

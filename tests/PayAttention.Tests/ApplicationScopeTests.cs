@@ -25,9 +25,32 @@ public sealed class ApplicationScopeTests
         Assert.Single(apps);
         Assert.Equal("PayAttention", apps[0].ProcessName);
         Assert.Equal(ApplicationListMode.Blacklist, apps[0].ListMode);
+        Assert.Equal(ApplicationTriggerFilter.None, apps[0].TriggerFilter);
         Assert.True(apps[0].Enabled);
         Assert.Empty(apps[0].TriggerIds);
         Assert.Equal(30, apps[0].DebounceSeconds);
+
+        // Settings focused must not pause OCR for other apps (mask only).
+        var config = BaseConfig(ApplicationScopeMode.AllMinusBlacklisted, apps);
+        Assert.False(ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, "PayAttention"));
+        Assert.Contains(
+            "PayAttention",
+            ApplicationScopeEvaluator.GetBlacklistProcessNamesToMask(config),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Migrate_PayAttention_full_blacklist_to_mask_only()
+    {
+        var config = BaseConfig(ApplicationScopeMode.AllMinusBlacklisted,
+        [
+            OnApp("PayAttention", ApplicationListMode.Blacklist)
+        ]);
+        Assert.True(ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, "PayAttention"));
+
+        ApplicationScopeEvaluator.MigratePayAttentionSettingsBlacklist(config);
+        Assert.Equal(ApplicationTriggerFilter.None, config.Applications[0].TriggerFilter);
+        Assert.False(ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, "PayAttention"));
     }
 
     [Fact]

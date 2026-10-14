@@ -77,3 +77,16 @@ public enum LogLevel
     Info = 0,
     Debug = 1
 }
+
+/// <summary>
+/// Preset from Optimize for this PC. Values are copied into individual AppConfig fields;
+/// the enum is informational (which profile last applied). UI shows VeryLow as "Very Low".
+/// </summary>
+public enum PerformanceProfileKind
+{
+    VeryLow = 0,
+    Low = 1,
+    Balanced = 2,
+    High = 3,
+    Ultra = 4
+}

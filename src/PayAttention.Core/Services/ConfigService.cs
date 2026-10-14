@@ -152,8 +152,20 @@ public sealed class ConfigService
         config.RecordBufferSeconds = Math.Clamp(config.RecordBufferSeconds, 5, 120);
         config.RecordFps = Math.Clamp(config.RecordFps, 1, 15);
         config.RecordJpegQuality = Math.Clamp(config.RecordJpegQuality, 40, 95);
-        config.OcrMaxWidth = Math.Clamp(config.OcrMaxWidth, 1600, 3840);
+        config.OcrMaxWidth = Math.Clamp(config.OcrMaxWidth, 960, 3840);
         config.OcrUpscalePercent = Math.Clamp(config.OcrUpscalePercent, 100, 400);
+        config.OcrBoostUpscalePercent = Math.Clamp(config.OcrBoostUpscalePercent, 100, 400);
+        config.OcrAbsoluteMaxWidth = Math.Clamp(config.OcrAbsoluteMaxWidth, 960, 3840);
+        config.OcrTerminalMaxRegions = Math.Clamp(config.OcrTerminalMaxRegions, 0, 4);
+        config.OcrMaxWindows = Math.Clamp(config.OcrMaxWindows, 1, 12);
+        config.OcrQueueCapacity = Math.Clamp(config.OcrQueueCapacity, 1, 4);
+        config.OcrCascadeBudgetFastMs = Math.Clamp(config.OcrCascadeBudgetFastMs, 100, 30_000);
+        config.OcrCascadeBudgetThoroughMs = Math.Clamp(config.OcrCascadeBudgetThoroughMs, 100, 60_000);
+        config.LastCalibrationSummary ??= string.Empty;
+        PerformanceProfiles.MigrateLegacyAppliedProfile(config);
+        if (!Enum.IsDefined(config.AppliedPerformanceProfile))
+            config.AppliedPerformanceProfile = PerformanceProfileKind.Ultra;
+        ApplicationScopeEvaluator.MigratePayAttentionSettingsBlacklist(config);
         config.SequenceIntervalSeconds = Math.Clamp(config.SequenceIntervalSeconds, 1, 30);
         config.SequenceBeforeSeconds = Math.Clamp(config.SequenceBeforeSeconds, 0, 60);
         config.SequenceAfterSeconds = Math.Clamp(config.SequenceAfterSeconds, 0, 60);

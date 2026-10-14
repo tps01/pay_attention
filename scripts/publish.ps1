@@ -64,6 +64,6 @@ Write-Host "Done. Run: $exe ($sizeMb MB)"
 if (Test-Path $guide) {
     Write-Host "User guide: $guide"
 } else {
-    Write-Host "User guide: (not built — install Edge or fix build-user-guide.ps1)"
+    Write-Host "User guide: (not built - install Edge or fix build-user-guide.ps1)"
 }
 Write-Host "You can double-click PayAttention.exe or create a shortcut."

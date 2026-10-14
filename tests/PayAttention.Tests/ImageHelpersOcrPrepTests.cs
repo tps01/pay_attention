@@ -97,4 +97,19 @@ public class ImageHelpersOcrPrepTests
         using var source = new Bitmap(8, 8, PixelFormat.Format32bppArgb);
         Assert.Null(ImageHelpers.ApplyOcrPrep(source, OcrPrepMode.None));
     }
+
+    [Fact]
+    public void PrepareForOcr_absolute_max_width_caps_after_upscale()
+    {
+        using var source = new Bitmap(1000, 500, PixelFormat.Format32bppArgb);
+        using var prepared = ImageHelpers.PrepareForOcr(
+            source,
+            maxWidth: 1920,
+            upscalePercent: 200,
+            invertColors: false,
+            absoluteMaxWidth: 1600);
+
+        Assert.True(prepared.Width <= 1600, $"expected width <= 1600, got {prepared.Width}");
+    }
 }
+
