@@ -320,9 +320,9 @@
                           ToolTip="Writes a .json next to each capture including OCR snippet text. Leave off unless troubleshooting — files can contain secrets." />
 
                 <TextBlock Grid.Row="3" Grid.Column="0" Text="Log level" VerticalAlignment="Center" Margin="0,0,0,8"
-                           ToolTip="Info = normal operation. Debug = extra OCR/match detail in the log files." />
+                           ToolTip="Info = normal operation. Debug = OCR text snippets, enqueue/fingerprint, resample, and fire-gate reasons in the log files. Logs older than 5 days are deleted." />
                 <ComboBox x:Name="LogLevelBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" Width="180" HorizontalAlignment="Left"
-                          ToolTip="Info = normal operation. Debug = extra OCR/match detail in the log files." />
+                          ToolTip="Info = normal operation. Debug = OCR text snippets, enqueue/fingerprint, resample, and fire-gate reasons in the log files. Logs older than 5 days are deleted." />
 
                 <TextBlock Grid.Row="4" Grid.Column="0" Text="Pause hotkey" VerticalAlignment="Center" Margin="0,0,0,8" />
                 <TextBox x:Name="HotkeyBox" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8" Width="180" HorizontalAlignment="Left"

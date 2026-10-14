@@ -1,5 +1,13 @@
 namespace PayAttention.Capture;
 
+/// <summary>Why <see cref="TriggerFireGate.ShouldFire"/> rejected a fire.</summary>
+public enum FireSuppressReason
+{
+    None = 0,
+    Debounce = 1,
+    UnchangedScene = 2
+}
+
 /// <summary>
 /// Decides whether a trigger should fire: time debounce plus "scene unchanged" suppression.
 /// </summary>
@@ -17,7 +25,15 @@ public sealed class TriggerFireGate
     /// <summary>
     /// Returns true when the trigger may fire now. Updates stored state on true.
     /// </summary>
-    public bool ShouldFire(string key, TimeSpan debounce, ulong fingerprint)
+    public bool ShouldFire(string key, TimeSpan debounce, ulong fingerprint) =>
+        ShouldFire(key, debounce, fingerprint, out _);
+
+    /// <inheritdoc cref="ShouldFire(string, TimeSpan, ulong)"/>
+    public bool ShouldFire(
+        string key,
+        TimeSpan debounce,
+        ulong fingerprint,
+        out FireSuppressReason reason)
     {
         lock (_lock)
         {
@@ -25,13 +41,20 @@ public sealed class TriggerFireGate
             if (_entries.TryGetValue(key, out var entry))
             {
                 if (now - entry.LastFireUtc < debounce)
+                {
+                    reason = FireSuppressReason.Debounce;
                     return false;
+                }
 
                 if (FrameFingerprint.IsSimilar(entry.Fingerprint, fingerprint, _maxFingerprintDistance))
+                {
+                    reason = FireSuppressReason.UnchangedScene;
                     return false;
+                }
             }
 
             _entries[key] = new GateEntry(now, fingerprint);
+            reason = FireSuppressReason.None;
             return true;
         }
     }

@@ -1544,6 +1544,9 @@ internal static class Program
             var hwnd = proc.MainWindowHandle;
             if (hwnd == IntPtr.Zero)
                 return;
+            // Harness-only: brief Alt pulse so SetForegroundWindow can succeed under
+            // Windows focus lock. Product CaptureMonitor must never inject keys.
+            PulseForegroundPermission();
             NativeMethods.ShowWindow(hwnd, 9); // SW_RESTORE
             NativeMethods.SetForegroundWindow(hwnd);
         }
@@ -1551,6 +1554,18 @@ internal static class Program
         {
             // ignore activation races
         }
+    }
+
+    /// <summary>
+    /// Marks this process as having recent input so SetForegroundWindow can succeed
+    /// under focus lock. Used only by the e2e harness, never by production monitoring.
+    /// </summary>
+    private static void PulseForegroundPermission()
+    {
+        const byte vkMenu = 0x12;
+        const uint keyeventfKeyup = 0x0002;
+        NativeMethods.keybd_event(vkMenu, 0, 0, UIntPtr.Zero);
+        NativeMethods.keybd_event(vkMenu, 0, keyeventfKeyup, UIntPtr.Zero);
     }
 
     private static string? FindShotFor(string captureDir, string triggerText)
@@ -1570,6 +1585,9 @@ internal static class Program
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
     }
 
     private static AppConfig BuildDmesgConfig(string captureDir)

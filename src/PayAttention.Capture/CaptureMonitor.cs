@@ -31,6 +31,9 @@ public sealed class CaptureMonitor : IDisposable
     private readonly PhaseProfiler _profiler = new();
     private readonly object _configLock = new();
 
+    private const int DebugOcrSnippetMaxChars = 500;
+    private static readonly TimeSpan EnqueueSkipLogInterval = TimeSpan.FromSeconds(30);
+
     private AppConfig _config;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
@@ -48,8 +51,8 @@ public sealed class CaptureMonitor : IDisposable
     private const int MaxSkippedGrabs = 4;
     /// <summary>Last whitelist process that held OS focus (survives focus-lock steals).</summary>
     private string? _stickyWhitelistForeground;
-    private DateTimeOffset _lastForegroundPulseUtc = DateTimeOffset.MinValue;
-    private SynchronizationContext? _uiContext;
+    private DateTimeOffset _lastEnqueueSkipLogUtc = DateTimeOffset.MinValue;
+    private int _enqueueSkipStreak;
 
     public CaptureMonitor(AppConfig config, AppLogger logger)
     {
@@ -102,13 +105,14 @@ public sealed class CaptureMonitor : IDisposable
         }
 
         _paused = false;
-        _uiContext = SynchronizationContext.Current;
         _stickyWhitelistForeground = null;
         _lastProfileFlushTimestamp = Stopwatch.GetTimestamp();
         _forceFullGrab = true;
         _lastEnqueueSkipped = false;
         _lastCaptureForeground = null;
         _skippedGrabCount = 0;
+        _enqueueSkipStreak = 0;
+        _lastEnqueueSkipLogUtc = DateTimeOffset.MinValue;
         _cts = new CancellationTokenSource();
         int queueCapacity;
         bool backgroundPriority;
@@ -138,6 +142,12 @@ public sealed class CaptureMonitor : IDisposable
         RaiseStatus("Monitoring", "OCR monitoring started.");
         _logger.Info(
             $"Monitoring started (queue={queueCapacity}, backgroundPriority={backgroundPriority}).");
+        if (_logger.MinLevel == LogLevel.Debug)
+        {
+            _logger.Info(
+                $"Debug logging on (OCR snippets in logs). Log folder: {_logger.LogDirectory}. " +
+                $"Static unmatched scenes re-OCR every {OcrFrameQueue.StaticSceneResampleSeconds}s.");
+        }
     }
 
     /// <summary>
@@ -237,9 +247,8 @@ public sealed class CaptureMonitor : IDisposable
 
                 // Whitelist-only: tell the skip gate which listed processes are alive (cheap
                 // GetProcessesByName). All / AllMinusBlacklisted ignore this snapshot.
-                // Selected follows the real FG when it is listed; otherwise the sticky last
-                // listed FG (focus-lock often steals back to the browser). A rare Alt pulse
-                // lets same-process Activate (e.g. harness) take FG while sticky is empty.
+                // Selected follows the real FG when it is listed; otherwise sticky last listed
+                // FG or top-most listed Z-order (focus-lock often steals OS FG elsewhere).
                 IEnumerable<string>? runningWhitelist = null;
                 if (config.ApplicationScope == ApplicationScopeMode.Whitelisted)
                 {
@@ -253,6 +262,7 @@ public sealed class CaptureMonitor : IDisposable
 
                 if (ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, foregroundProcess, runningWhitelist))
                 {
+                    LogScopeSkip(config, foregroundProcess, runningWhitelist);
                     await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
                     continue;
                 }
@@ -289,6 +299,7 @@ public sealed class CaptureMonitor : IDisposable
                 if (frame is null)
                 {
                     MaybeFlushProfile(config);
+                    _logger.Debug($"Grab returned null (scope={config.CaptureScope}, FG={foregroundProcess ?? "(none)"}).");
                     await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
                     continue;
                 }
@@ -314,8 +325,12 @@ public sealed class CaptureMonitor : IDisposable
                     _profiler.Record("ring", ringStart, _logger);
                 }
 
-                var enqueued = queue.TryEnqueueIfChanged(frame, foregroundProcess, _profiler, _logger);
+                var fingerprint = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
+                var hamming = queue.HammingVsLastEnqueued(fingerprint);
+                var enqueued = queue.TryEnqueueIfChanged(
+                    frame, foregroundProcess, out var enqueueDecision, _profiler, _logger);
                 _lastEnqueueSkipped = !enqueued;
+                LogEnqueueDecision(enqueueDecision, enqueued, fingerprint, hamming, foregroundProcess);
 
                 retentionCounter++;
                 if (retentionCounter % 60 == 0)
@@ -323,7 +338,11 @@ public sealed class CaptureMonitor : IDisposable
                     var dir = config.CaptureDirectory;
                     var age = config.RetentionMaxAgeDays;
                     var maxFiles = config.RetentionMaxFiles;
-                    _ = Task.Run(() => RetentionService.Enforce(dir, age, maxFiles, _logger));
+                    _ = Task.Run(() =>
+                    {
+                        RetentionService.Enforce(dir, age, maxFiles, _logger);
+                        _logger.EnforceRetention();
+                    });
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -375,12 +394,15 @@ public sealed class CaptureMonitor : IDisposable
 
                 var foregroundProcess = queued.ForegroundProcess;
                 var published = new HashSet<Guid>();
-                void PublishMatches(string ocrText)
+                var lastLoggedOcrLen = -1;
+                void PublishMatches(string ocrText, bool logMatchSummary)
                 {
                     var matchStart = Stopwatch.GetTimestamp();
                     var found = TriggerMatcher.FindMatches(ocrText, config.Triggers, config.FastMatchThresholdPercent)
                         .Where(m => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, m.Trigger.Id))
                         .ToList();
+                    if (logMatchSummary)
+                        LogMatchSummary(config, foregroundProcess, found);
                     var debounce = TimeSpan.FromSeconds(
                         ApplicationScopeEvaluator.GetEffectiveDebounceSeconds(config, foregroundProcess));
                     var fires = TriggerFireCoalescer.SelectFires(found, match =>
@@ -389,13 +411,17 @@ public sealed class CaptureMonitor : IDisposable
                             return false;
 
                         var key = $"{match.Trigger.Id}:{match.MatchedPortion}";
-                        if (_fireGate.ShouldFire(key, debounce, queued.Fingerprint))
+                        if (_fireGate.ShouldFire(key, debounce, queued.Fingerprint, out var suppressReason))
                         {
-                            _logger.Debug($"Trigger '{match.Trigger.Text}' accepted (matched '{match.MatchedPortion}').");
+                            _logger.Debug(
+                                $"Trigger '{match.Trigger.Text}' accepted (matched '{match.MatchedPortion}', " +
+                                $"fp=0x{queued.Fingerprint:X16}).");
                             return true;
                         }
 
-                        _logger.Debug($"Trigger '{match.Trigger.Text}' suppressed (debounce or unchanged scene).");
+                        _logger.Debug(
+                            $"Trigger '{match.Trigger.Text}' suppressed ({FormatSuppressReason(suppressReason)}; " +
+                            $"matched '{match.MatchedPortion}', fp=0x{queued.Fingerprint:X16}).");
                         return false;
                     });
                     _profiler.Record("match", matchStart, _logger);
@@ -412,23 +438,45 @@ public sealed class CaptureMonitor : IDisposable
                     }
                 }
 
+                void OnOcrText(string ocrText)
+                {
+                    if (ocrText.Length != lastLoggedOcrLen)
+                    {
+                        lastLoggedOcrLen = ocrText.Length;
+                        _logger.Debug(
+                            $"OCR interim ({ocrText.Length} chars): {TruncateForLog(ocrText, DebugOcrSnippetMaxChars)}");
+                    }
+
+                    PublishMatches(ocrText, logMatchSummary: false);
+                }
+
                 // Live pending count: capture keeps enqueueing while OCR runs. A snapshot at
                 // start would miss backlog that arrives mid-cascade (stream shot→REC inject).
                 // Publish as soon as a pass matches so a hit is not stuck behind later passes
                 // that are still looking for other triggers.
+                var ocrClock = Stopwatch.StartNew();
                 var ocr = await RecognizeFrameAsync(
                         config,
                         captured,
                         token,
                         () => queue.PendingCount,
-                        PublishMatches)
+                        OnOcrText)
                     .ConfigureAwait(false);
                 var text = ocr.Text;
-                PublishMatches(text);
+                _logger.Debug(
+                    $"OCR done in {ocrClock.ElapsedMilliseconds}ms " +
+                    $"monitor={captured.MonitorIndex}/{captured.MonitorName} " +
+                    $"bounds={captured.ScreenBounds.Width}x{captured.ScreenBounds.Height} " +
+                    $"@({captured.ScreenBounds.X},{captured.ScreenBounds.Y}) " +
+                    $"cutShort={ocr.CutShortForBacklog} chars={text.Length} " +
+                    $"fp=0x{queued.Fingerprint:X16} FG={foregroundProcess ?? "(none)"}: " +
+                    TruncateForLog(text, DebugOcrSnippetMaxChars));
+                PublishMatches(text, logMatchSummary: true);
 
                 // Total miss, or a search cut short with an idle queue: sample the static scene
                 // again. A finished search that already matched stays quiet so absent triggers
-                // in a long list do not re-OCR forever (whitelist / many-trigger case).
+                // in a long list do not re-OCR forever (whitelist / many-trigger case) — but
+                // ScheduleResample still re-checks unmatched sticky text after a TTL (#19).
                 // Whitelist Selected: only count triggers allowed for this FG — OCR may see
                 // another listed app's phrase without being allowed to fire it.
                 // AllMinusBlacklisted: one pane's hit must not silence OCR while other panes'
@@ -438,14 +486,33 @@ public sealed class CaptureMonitor : IDisposable
                 var anyForQuiet = config.ApplicationScope == ApplicationScopeMode.AllMinusBlacklisted
                     ? allMatched
                     : anyMatched;
-                if (OcrCascadePolicy.ShouldResample(
-                        allMatched,
-                        anyForQuiet,
-                        ocr.CutShortForBacklog,
-                        queue.PendingCount))
+                var pending = queue.PendingCount;
+                var shouldResample = OcrCascadePolicy.ShouldResample(
+                    allMatched,
+                    anyForQuiet,
+                    ocr.CutShortForBacklog,
+                    pending);
+                if (shouldResample)
                 {
                     queue.AllowResample();
                     _forceFullGrab = true;
+                    _logger.Debug(
+                        $"Resample: allow immediately (allMatched={allMatched}, anyForQuiet={anyForQuiet}, " +
+                        $"cutShort={ocr.CutShortForBacklog}, pending={pending}).");
+                }
+                else if (!allMatched)
+                {
+                    queue.ScheduleResample(TimeSpan.FromSeconds(OcrFrameQueue.StaticSceneResampleSeconds));
+                    _logger.Debug(
+                        $"Resample: schedule in {OcrFrameQueue.StaticSceneResampleSeconds}s " +
+                        $"(allMatched={allMatched}, anyForQuiet={anyForQuiet}, " +
+                        $"cutShort={ocr.CutShortForBacklog}, pending={pending}).");
+                }
+                else
+                {
+                    _logger.Debug(
+                        $"Resample: quiet (allMatched={allMatched}, anyForQuiet={anyForQuiet}, " +
+                        $"cutShort={ocr.CutShortForBacklog}, pending={pending}).");
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -464,6 +531,104 @@ public sealed class CaptureMonitor : IDisposable
         }
     }
 
+    private void LogScopeSkip(
+        AppConfig config,
+        string? foregroundProcess,
+        IEnumerable<string>? runningWhitelist)
+    {
+        if (_logger.MinLevel != LogLevel.Debug)
+            return;
+
+        var reason = config.ApplicationScope switch
+        {
+            ApplicationScopeMode.Whitelisted when
+                ApplicationScopeEvaluator.GetWhitelistProcessNames(config).Count == 0 =>
+                "whitelist empty",
+            ApplicationScopeMode.Whitelisted =>
+                "no whitelisted process running",
+            ApplicationScopeMode.AllMinusBlacklisted =>
+                $"foreground fully blacklisted ({foregroundProcess ?? "(none)"})",
+            _ => "scope skip"
+        };
+        var running = runningWhitelist is null ? "" : $" running=[{string.Join(",", runningWhitelist)}]";
+        _logger.Debug($"OCR cycle skipped: {reason}; scope={config.ApplicationScope}; FG={foregroundProcess ?? "(none)"}{running}");
+    }
+
+    private void LogEnqueueDecision(
+        OcrEnqueueDecision decision,
+        bool enqueued,
+        ulong fingerprint,
+        int? hamming,
+        string? foregroundProcess)
+    {
+        if (_logger.MinLevel != LogLevel.Debug)
+            return;
+
+        if (decision == OcrEnqueueDecision.SkippedUnchanged)
+        {
+            _enqueueSkipStreak++;
+            var now = DateTimeOffset.UtcNow;
+            if (_enqueueSkipStreak > 1 && now - _lastEnqueueSkipLogUtc < EnqueueSkipLogInterval)
+                return;
+            _lastEnqueueSkipLogUtc = now;
+            _logger.Debug(
+                $"Enqueue skipped (unchanged scene); streak={_enqueueSkipStreak}; " +
+                $"hamming={hamming?.ToString() ?? "n/a"} (max={OcrFrameQueue.EnqueueMaxHammingDistance}); " +
+                $"fp=0x{fingerprint:X16}; FG={foregroundProcess ?? "(none)"}");
+            return;
+        }
+
+        _enqueueSkipStreak = 0;
+        if (!enqueued && decision == OcrEnqueueDecision.Dropped)
+        {
+            _logger.Debug($"Enqueue dropped (queue full/closed); fp=0x{fingerprint:X16}; FG={foregroundProcess ?? "(none)"}");
+            return;
+        }
+
+        var label = decision == OcrEnqueueDecision.EnqueuedForcedResample
+            ? "enqueued (forced static resample)"
+            : "enqueued";
+        _logger.Debug(
+            $"Enqueue {label}; hamming={hamming?.ToString() ?? "n/a"}; " +
+            $"fp=0x{fingerprint:X16}; FG={foregroundProcess ?? "(none)"}");
+    }
+
+    private void LogMatchSummary(
+        AppConfig config,
+        string? foregroundProcess,
+        IReadOnlyList<TriggerMatchResult> found)
+    {
+        if (_logger.MinLevel != LogLevel.Debug)
+            return;
+
+        var allowed = EnabledTriggers(config)
+            .Where(t => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, t.Id))
+            .ToList();
+        var hitIds = found.Select(m => m.Trigger.Id).ToHashSet();
+        var hits = found.Select(m => $"'{m.Trigger.Text}'→'{m.MatchedPortion}'");
+        var misses = allowed.Where(t => !hitIds.Contains(t.Id)).Select(t => $"'{t.Text}'");
+        _logger.Debug(
+            $"Match summary: allowed={allowed.Count}, hits={found.Count} [{string.Join("; ", hits)}], " +
+            $"misses=[{string.Join("; ", misses)}]");
+    }
+
+    private static string FormatSuppressReason(FireSuppressReason reason) => reason switch
+    {
+        FireSuppressReason.Debounce => "debounce",
+        FireSuppressReason.UnchangedScene => "unchanged scene",
+        _ => "unknown"
+    };
+
+    private static string TruncateForLog(string text, int maxChars)
+    {
+        if (string.IsNullOrEmpty(text))
+            return "(empty)";
+        var flat = text.Replace('\r', ' ').Replace('\n', ' ');
+        if (flat.Length <= maxChars)
+            return flat;
+        return flat[..maxChars] + "…";
+    }
+
     private static async Task DelayCapturePeriodAsync(TimeSpan interval, Stopwatch cycle, CancellationToken token)
     {
         var remaining = interval - cycle.Elapsed;
@@ -472,9 +637,9 @@ public sealed class CaptureMonitor : IDisposable
     }
 
     /// <summary>
-    /// Prefer OS FG when it is a listed app (updates sticky). Otherwise keep sticky so
-    /// Selected does not flip when the browser steals focus. Pulse input so same-process
-    /// Activate (e.g. harness) can reclaim FG; re-read after the pulse.
+    /// Prefer OS FG when it is a listed app (updates sticky). Otherwise follow top-most
+    /// listed Z-order or sticky so Selected does not flip when another app steals OS FG.
+    /// Never injects input — product monitoring must not interrupt the user's keyboard/menus.
     /// </summary>
     private string? ResolveWhitelistForeground(IReadOnlyList<string> whitelist, string? osForeground)
     {
@@ -486,25 +651,9 @@ public sealed class CaptureMonitor : IDisposable
             return fgNorm;
         }
 
-        // Help same-process Activate take FG (focus lock). Pulse on the UI thread when
-        // available so WinForms timers in the same process can SetForegroundWindow.
-        var now = DateTimeOffset.UtcNow;
-        if (now - _lastForegroundPulseUtc > TimeSpan.FromMilliseconds(500))
-        {
-            _lastForegroundPulseUtc = now;
-            PulseForegroundPermissionOnUiThread();
-            fgNorm = ApplicationScopeEvaluator.NormalizeProcessName(_grabber.GetForegroundProcessName());
-            if (fgNorm.Length > 0 &&
-                whitelist.Any(n => string.Equals(n, fgNorm, StringComparison.OrdinalIgnoreCase)))
-            {
-                _stickyWhitelistForeground = fgNorm;
-                return fgNorm;
-            }
-        }
-
-        // Activate often raises Z-order among listed TopMost panes without winning OS FG
-        // (browser focus lock). Follow the top-most listed window so Selected can switch
-        // Alpha → Beta after the harness raises the next pane.
+        // Activate/raise often changes Z-order among listed TopMost panes without winning
+        // OS FG (browser focus lock). Follow the top-most listed window so Selected can
+        // switch Alpha → Beta after another process raises the next pane.
         var topListed = _grabber.GetTopmostProcessAmong(whitelist);
         if (!string.IsNullOrEmpty(topListed))
         {
@@ -528,24 +677,6 @@ public sealed class CaptureMonitor : IDisposable
 
         // Outside the list and no sticky yet: deny Selected (caller keeps os FG name).
         return osForeground;
-    }
-
-    private void PulseForegroundPermissionOnUiThread()
-    {
-        if (_uiContext is null)
-        {
-            _grabber.PulseForegroundPermission();
-            return;
-        }
-
-        try
-        {
-            _uiContext.Send(_ => _grabber.PulseForegroundPermission(), null);
-        }
-        catch
-        {
-            _grabber.PulseForegroundPermission();
-        }
     }
 
     private CapturedFrame? Grab(AppConfig config)

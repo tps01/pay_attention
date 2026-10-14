@@ -11,11 +11,11 @@ Local only, with no cloud support.
 Prefer a **[GitHub Release](https://github.com/tps01/pay_attention/releases)** zip (exe + user guide). To publish one after pushing code:
 
 ```powershell
-git tag v1.4.1
-git push origin v1.4.1
+git tag v1.4.3
+git push origin v1.4.3
 ```
 
-That runs CI, builds the win-x64 package, and attaches `PayAttention-1.4.1-win-x64.zip` to the release.
+That runs CI, builds the win-x64 package, and attaches `PayAttention-1.4.3-win-x64.zip` to the release.
 
 Or build locally with the .NET 8 SDK and hand them `publish\`:
 
@@ -45,7 +45,8 @@ Or build locally with the .NET 8 SDK and hand them `publish\`:
 - Triggers: `contains` / `exact` / `regex`
 - Actions: Screenshot, Record (pre-roll AVI/GIF + still), Screenshot sequence
 - Debounce + unchanged-screen suppression (sticky consoles do not spam captures)
-- Import/Export settings JSON; multi-monitor / foreground-window scope; retention
+- Static unmatched scenes re-OCR about every 10s so sticky text is not ignored forever
+- Import/Export settings JSON; multi-monitor / foreground-window scope; capture retention; 5-day log pruning
 
 ## Requirements
 
@@ -58,7 +59,7 @@ Or build locally with the .NET 8 SDK and hand them `publish\`:
 .\scripts\publish.ps1
 ```
 
-Optional version for About / assembly info: `.\scripts\publish.ps1 -Version 1.4.1`
+Optional version for About / assembly info: `.\scripts\publish.ps1 -Version 1.4.3`
 
 Or `scripts\publish.bat` if script execution is blocked. Output: `publish\PayAttention.exe` and usually `publish\PayAttention-UserGuide.pdf`.
 
@@ -81,9 +82,9 @@ Under `%LocalAppData%\pay_attention\`:
 | --- | --- |
 | `config.json` | Settings and triggers |
 | `captures\` | Screenshots, recordings, sequence folders |
-| `logs\` | App log files (may include trigger names/paths) |
+| `logs\` | App log files (may include trigger names/OCR text; pruned after **5 days**) |
 
-Defaults (new installs): OCR every **500 ms**, debounce **30 s**, record buffer **15 s @ 3 FPS** JPEG **60**, sequence **5 / 30 / 30** s, retention **14 days / 200** items. Monitoring does **not** start until you start it (unless you enable start-on-launch).
+Defaults (new installs): OCR every **500 ms**, debounce **30 s**, record buffer **15 s @ 3 FPS** JPEG **60**, sequence **5 / 30 / 30** s, capture retention **14 days / 200** items. Monitoring does **not** start until you start it (unless you enable start-on-launch).
 
 Import/Export copies triggers and settings. Capture folder in exports is left blank so the other PC uses its own default.
 
@@ -95,7 +96,7 @@ Unreliable: very dim text, mid-token `!` `@` `$`, covered windows, fonts well be
 
 ## Privacy
 
-Can capture anything on screen, including secrets. Treat `captures\` and `logs\` as sensitive. Keep retention on. Leave **Debug: save JSON sidecar** off unless troubleshooting (sidecars can store OCR text).
+Can capture anything on screen, including secrets. Treat `captures\` and `logs\` as sensitive. Keep capture retention on; app logs older than 5 days are pruned. For bug reports, set **Log level** to **Debug**, reproduce, then tray → **Open logs folder**. Leave **Debug: save JSON sidecar** off unless troubleshooting (sidecars can store OCR text).
 
 ## Tests
 

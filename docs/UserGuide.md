@@ -51,7 +51,7 @@ The Triggers and Applications sections in Settings can be collapsed (click the s
 | **Thorough** (default) | Text stays on screen (logs, dialogs, dashboards) or is small / low-contrast / oddly punctuated | Runs more OCR passes (slower per frame, higher chance of a match) |
 | **Fast** | Text appears only briefly (fast-scrolling consoles, kernel dumps, flashing status lines) | Prefers fresh screen samples over exhausting every OCR fallback on one frame |
 
-Use **Fast** for lines you expect to scroll away in about a second. Use **Thorough** for hard-to-read tokens that stay visible. You can mix modes across triggers: while only **Fast** triggers remain unmatched, OCR spends less time on fallbacks so fresh frames win; **Thorough** triggers keep the deeper multi-pass search. Each matching row still fires, including two rows that share a phrase but use different actions (Screenshot and Record). A hit is saved as soon as its pass matches, without waiting for later passes that are still looking for other triggers. After a finished search that already matched something, a static scene stays quiet instead of re-scanning for triggers that are not on screen. A total miss is tried again.
+Use **Fast** for lines you expect to scroll away in about a second. Use **Thorough** for hard-to-read tokens that stay visible. You can mix modes across triggers: while only **Fast** triggers remain unmatched, OCR spends less time on fallbacks so fresh frames win; **Thorough** triggers keep the deeper multi-pass search. Each matching row still fires, including two rows that share a phrase but use different actions (Screenshot and Record). A hit is saved as soon as its pass matches, without waiting for later passes that are still looking for other triggers. After a finished search that already matched something, a static scene stays quiet briefly instead of re-scanning every grab — but if any enabled trigger is still unmatched, the same scene is OCR’d again about every **10 seconds** so sticky text is not ignored forever. A total miss is tried again immediately.
 
 Pair **Fast** with a shorter **OCR interval** (about 250–500 ms) when catching flash-by text.
 
@@ -112,7 +112,7 @@ If the screen is essentially **unchanged** (console left open), it will **not** 
 | --- | --- |
 | `config.json` | Settings and triggers |
 | `captures\` | Output files |
-| `logs\` | App logs (can mention triggers/paths) |
+| `logs\` | App logs (can mention triggers/paths; auto-deleted after **5 days**) |
 
 Change the capture folder in Settings. **Import…** / **Export…** copy settings between PCs; the capture path is not forced from the other machine (missing paths fall back to this PC’s default).
 
@@ -126,9 +126,16 @@ Change the capture folder in Settings. **Import…** / **Export…** copy settin
 - **Recording** — buffer length / FPS / quality (defaults **15 s**, **3 FPS**, JPEG **60**)  
 - **Sequence** — spacing / before / after (defaults **5 / 30 / 30** s)  
 - **Start with Windows** / **Start monitoring on launch**  
-- **Log level** — `Info` (default) or `Debug` (OCR/match detail plus a ranked phase timing breakdown in `logs\`; works in the published exe). Quiet windows look like `grab` + `enqueue.hash` with `pending=0`; busy windows add `ocr.*` / `match`. Profile lines include `[mon=all|primary scope=monitor|foreground interval=500ms pending=N]`.  
-- **Retention** — auto-delete (defaults **14 days** or **200** items)  
+- **Log level** — `Info` (default) or `Debug` (OCR snippets, enqueue/fingerprint, resample, fire-gate reasons, plus a ranked phase timing breakdown in `logs\`; works in the published exe). Quiet windows look like `grab` + `enqueue.hash` with `pending=0`; busy windows add `ocr.*` / `match`. Profile lines include `[mon=all|primary scope=monitor|foreground interval=500ms pending=N]`.  
+- **Retention** — auto-delete captures (defaults **14 days** or **200** items); app logs older than **5 days** are always pruned  
 - **Debug JSON sidecars** — leave **off** (can store OCR text next to captures)  
+
+### Submitting logs with a bug report
+
+1. Settings → Behavior → **Log level** = **Debug**, Save  
+2. Reproduce the miss (leave sticky text on screen long enough for a ~10 s re-OCR if needed)  
+3. Tray → **Open logs folder**  
+4. Attach the relevant `app-yyyyMMdd.log` file(s) (treat as sensitive — they can include OCR text)
 
 OCR max width / upscale / invert and the cascade knobs live under **Settings → Advanced**. Extra OCR passes for dark terminals run when those Advanced toggles are on (**Ultra** default). Saved captures stay full color.
 
@@ -160,7 +167,7 @@ Use this on the machine that will run Pay Attention (especially weaker corporate
 
 ## Privacy
 
-Can capture passwords and secrets. Treat `captures\` and `logs\` as sensitive. Keep retention on. Delete data you no longer need.
+Can capture passwords and secrets. Treat `captures\` and `logs\` as sensitive. Keep capture retention on. App logs older than 5 days are deleted automatically. Delete data you no longer need.
 
 ## Stop / remove
 
