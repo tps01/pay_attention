@@ -291,7 +291,12 @@ public partial class SettingsWindow : Window
             ProcessName = "",
             ListMode = ApplicationListMode.Whitelist,
             DebounceSeconds = 30,
-            TriggerFilter = ApplicationTriggerFilter.All
+            TriggerFilter = ApplicationTriggerFilter.All,
+            OcrAdaptive = OcrPrepOverride.Inherit,
+            OcrNeon = OcrPrepOverride.Inherit,
+            OcrGray = OcrPrepOverride.Inherit,
+            OcrInvert = OcrPrepOverride.Inherit,
+            OcrTerminal = OcrPrepOverride.Inherit
         });
     }
 
@@ -878,6 +883,31 @@ public partial class SettingsWindow : Window
         public string Display { get; }
     }
 
+    private void EditApplicationOcrPrep_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: ApplicationRow row })
+            return;
+
+        var dialog = new ApplicationOcrPrepWindow(
+            row.ProcessName,
+            row.OcrAdaptive,
+            row.OcrNeon,
+            row.OcrGray,
+            row.OcrInvert,
+            row.OcrTerminal)
+        {
+            Owner = this
+        };
+        if (dialog.ShowDialog() != true)
+            return;
+
+        row.OcrAdaptive = dialog.OcrAdaptive;
+        row.OcrNeon = dialog.OcrNeon;
+        row.OcrGray = dialog.OcrGray;
+        row.OcrInvert = dialog.OcrInvert;
+        row.OcrTerminal = dialog.OcrTerminal;
+    }
+
     private sealed class ApplicationRow : INotifyPropertyChanged
     {
         private bool _enabled = true;
@@ -885,6 +915,11 @@ public partial class SettingsWindow : Window
         private ApplicationListMode _listMode = ApplicationListMode.Blacklist;
         private int _debounceSeconds = 30;
         private ApplicationTriggerFilter _triggerFilter = ApplicationTriggerFilter.All;
+        private OcrPrepOverride _ocrAdaptive = OcrPrepOverride.Inherit;
+        private OcrPrepOverride _ocrNeon = OcrPrepOverride.Inherit;
+        private OcrPrepOverride _ocrGray = OcrPrepOverride.Inherit;
+        private OcrPrepOverride _ocrInvert = OcrPrepOverride.Inherit;
+        private OcrPrepOverride _ocrTerminal = OcrPrepOverride.Inherit;
 
         public Guid Id { get; set; } = Guid.NewGuid();
         public List<Guid> TriggerIds { get; set; } = [];
@@ -920,6 +955,38 @@ public partial class SettingsWindow : Window
             set { _triggerFilter = value; OnPropertyChanged(); }
         }
 
+        public OcrPrepOverride OcrAdaptive
+        {
+            get => _ocrAdaptive;
+            set { _ocrAdaptive = value; OnPropertyChanged(); OnPropertyChanged(nameof(OcrPrepSummary)); }
+        }
+
+        public OcrPrepOverride OcrNeon
+        {
+            get => _ocrNeon;
+            set { _ocrNeon = value; OnPropertyChanged(); OnPropertyChanged(nameof(OcrPrepSummary)); }
+        }
+
+        public OcrPrepOverride OcrGray
+        {
+            get => _ocrGray;
+            set { _ocrGray = value; OnPropertyChanged(); OnPropertyChanged(nameof(OcrPrepSummary)); }
+        }
+
+        public OcrPrepOverride OcrInvert
+        {
+            get => _ocrInvert;
+            set { _ocrInvert = value; OnPropertyChanged(); OnPropertyChanged(nameof(OcrPrepSummary)); }
+        }
+
+        public OcrPrepOverride OcrTerminal
+        {
+            get => _ocrTerminal;
+            set { _ocrTerminal = value; OnPropertyChanged(); OnPropertyChanged(nameof(OcrPrepSummary)); }
+        }
+
+        public string OcrPrepSummary => OcrPrepResolver.FormatSummary(ToConfig());
+
         public event PropertyChangedEventHandler? PropertyChanged;
 
         public ApplicationConfig ToConfig() => new()
@@ -930,7 +997,12 @@ public partial class SettingsWindow : Window
             ListMode = ListMode,
             DebounceSeconds = DebounceSeconds,
             TriggerFilter = TriggerFilter,
-            TriggerIds = TriggerIds.ToList()
+            TriggerIds = TriggerIds.ToList(),
+            OcrAdaptive = OcrAdaptive,
+            OcrNeon = OcrNeon,
+            OcrGray = OcrGray,
+            OcrInvert = OcrInvert,
+            OcrTerminal = OcrTerminal
         };
 
         public static ApplicationRow FromConfig(ApplicationConfig config)
@@ -948,7 +1020,12 @@ public partial class SettingsWindow : Window
                 ListMode = config.ListMode,
                 DebounceSeconds = config.DebounceSeconds <= 0 ? 30 : config.DebounceSeconds,
                 TriggerFilter = filter,
-                TriggerIds = ids
+                TriggerIds = ids,
+                OcrAdaptive = config.OcrAdaptive,
+                OcrNeon = config.OcrNeon,
+                OcrGray = config.OcrGray,
+                OcrInvert = config.OcrInvert,
+                OcrTerminal = config.OcrTerminal
             };
         }
 

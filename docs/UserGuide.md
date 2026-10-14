@@ -76,6 +76,7 @@ Limit which processes OCR watches (process name, e.g. `firefox` or `PayAttention
 - **Application** — process name (**Pick…** lists running apps, or **Browse…** to an `.exe`)  
 - **List** — `Whitelist` or `Blacklist`  
 - **Debounce** — overrides Capture debounce when that app is in the foreground (default **30** s)  
+- **Prep** — per-app OCR prep overrides for adaptive / neon / gray / invert / terminal ROI (**Edit…**). Each pass can be **Inherit** (use Advanced globals), **Off**, **On**, or **Auto**. **Auto** samples that app’s colors and enables neon/terminal for dark neon UIs, adaptive (and invert when very dark) for low-contrast dark panes, and leaves bright UIs on baseline only.  
 - **Triggers** — dropdown: **All**, **Selected** (opens a multi-select picker), or **None**. Deleted triggers are dropped from associations automatically.
 
 Pause monitoring with the hotkey (default `Ctrl+Shift+P`) in Settings → Behavior.

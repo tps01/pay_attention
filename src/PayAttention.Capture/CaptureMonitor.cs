@@ -27,6 +27,7 @@ public sealed class CaptureMonitor : IDisposable
     private readonly FrameRingBuffer _sequenceRing;
     private readonly AppLogger _logger;
     private readonly PhaseProfiler _profiler = new();
+    private readonly OcrPrepProfileAnalyzer _prepAnalyzer = new();
     private readonly object _configLock = new();
 
     private const int DebugOcrSnippetMaxChars = 500;
@@ -76,6 +77,7 @@ public sealed class CaptureMonitor : IDisposable
         lock (_configLock)
         {
             _config = CloneConfig(config);
+            _prepAnalyzer.ClearCache();
             _ringBuffer.Configure(
                 TimeSpan.FromSeconds(_config.RecordBufferSeconds),
                 _config.RecordFps);
@@ -459,7 +461,9 @@ public sealed class CaptureMonitor : IDisposable
                         captured,
                         token,
                         () => queue.PendingCount,
-                        OnOcrText)
+                        OnOcrText,
+                        foregroundProcess,
+                        queued.Fingerprint)
                     .ConfigureAwait(false);
                 var text = ocr.Text;
                 _logger.Debug(
@@ -724,11 +728,15 @@ public sealed class CaptureMonitor : IDisposable
         CapturedFrame frame,
         CancellationToken token,
         Func<int>? pendingBehind = null,
-        Action<string, IReadOnlyList<TriggerMatchResult>>? onText = null)
+        Action<string, IReadOnlyList<TriggerMatchResult>>? onText = null,
+        string? processName = null,
+        ulong fingerprint = 0)
     {
         pendingBehind ??= static () => 0;
         var cascadeClock = Stopwatch.StartNew();
-        var cascade = new CascadeContext(config, cascadeClock, pendingBehind, _profiler, _logger);
+        var cascade = new CascadeContext(
+            config, cascadeClock, pendingBehind, _profiler, _logger,
+            processName: processName, fingerprint: fingerprint);
 
         // AllMinusBlacklisted: OCR each non-masked visible window crop so side-by-side
         // panes (e.g. Alpha + Beta) are recoverable; keep the full masked frame for save.
@@ -760,7 +768,8 @@ public sealed class CaptureMonitor : IDisposable
                     // Fresh cascade budget per monitor; backlog pressure only on the first.
                     var monitorPending = parts.Count == 0 ? pendingBehind : static () => 0;
                     var monitorCascade = new CascadeContext(
-                        config, Stopwatch.StartNew(), monitorPending, _profiler, _logger, sharedMatch);
+                        config, Stopwatch.StartNew(), monitorPending, _profiler, _logger, sharedMatch,
+                        processName: processName, fingerprint: fingerprint);
 
                     // Crop from the queued virtual-desktop frame — never live re-grab, so
                     // match text and the saved screenshot share the same frozen moment.
@@ -848,7 +857,20 @@ public sealed class CaptureMonitor : IDisposable
             if (slice is null)
                 continue;
 
-            var part = await RecognizeBitmapMultiPassAsync(slice, sharedCascade, token, onText)
+            // Per-window prep overrides (e.g. neon Auto on a terminal HWND).
+            var windowProcess = ScreenGrabber.GetProcessNameForWindow(targets[i].Hwnd)
+                                ?? sharedCascade.ProcessName;
+            var windowCascade = new CascadeContext(
+                config,
+                sharedCascade.Clock,
+                () => sharedCascade.PendingBehind,
+                _profiler,
+                _logger,
+                sharedCascade.Match,
+                windowProcess,
+                sharedCascade.Fingerprint);
+
+            var part = await RecognizeBitmapMultiPassAsync(slice, windowCascade, token, onText)
                 .ConfigureAwait(false);
             parts.Add(part.Text);
             cutShort |= part.CutShortForBacklog;
@@ -871,14 +893,15 @@ public sealed class CaptureMonitor : IDisposable
         var chunks = new List<string>(8);
         var config = cascade.Config;
         var boost = PassUpscale(config, 200);
+        var prep = ResolvePrepFlags(bitmap, cascade);
 
         async Task<OcrFrameResult?> RunPassAsync(
             int upscale,
             bool invert,
-            OcrPrepMode prep,
+            OcrPrepMode prepMode,
             string phase)
         {
-            await AddOcrPassAsync(chunks, bitmap, config, upscale, invert, prep, phase, token)
+            await AddOcrPassAsync(chunks, bitmap, config, upscale, invert, prepMode, phase, token)
                 .ConfigureAwait(false);
             return FinishPassIfDone(chunks, cascade, onText);
         }
@@ -889,7 +912,7 @@ public sealed class CaptureMonitor : IDisposable
             return baseline;
 
         // Adaptive stretch → invert (dark-terminal / low-contrast boost).
-        if (config.OcrEnableAdaptive)
+        if (prep.Adaptive)
         {
             if (await RunPassAsync(boost, invert: true, OcrPrepMode.AdaptiveContrast, "ocr.adaptive")
                     .ConfigureAwait(false) is { } adaptive)
@@ -897,7 +920,7 @@ public sealed class CaptureMonitor : IDisposable
         }
 
         // Neon-biased high-contrast without forcing invert (complements adaptive path).
-        if (config.OcrEnableNeon)
+        if (prep.Neon)
         {
             if (await RunPassAsync(boost, invert: false, OcrPrepMode.NeonHighContrast, "ocr.neon")
                     .ConfigureAwait(false) is { } neon)
@@ -905,14 +928,14 @@ public sealed class CaptureMonitor : IDisposable
         }
 
         // Plain luma grayscale (no contrast stretch) — optional extra pass.
-        if (config.OcrEnableGray)
+        if (prep.Gray)
         {
             if (await RunPassAsync(config.OcrUpscalePercent, invert: false, OcrPrepMode.Gray, "ocr.gray")
                     .ConfigureAwait(false) is { } gray)
                 return gray;
         }
 
-        if (config.OcrInvertColors && config.OcrUpscalePercent != boost)
+        if (prep.Invert && config.OcrUpscalePercent != boost)
         {
             if (await RunPassAsync(config.OcrUpscalePercent, invert: true, OcrPrepMode.None, "ocr.invert")
                     .ConfigureAwait(false) is { } invert)
@@ -920,7 +943,7 @@ public sealed class CaptureMonitor : IDisposable
         }
 
         // Only when triggers are still missing: crop neon-terminal ROIs and re-OCR hard.
-        if (config.OcrEnableTerminal && config.OcrTerminalMaxRegions > 0)
+        if (prep.Terminal && config.OcrTerminalMaxRegions > 0)
         {
             await RecognizeTerminalRegionsAsync(chunks, bitmap, cascade, token).ConfigureAwait(false);
             if (FinishPassIfDone(chunks, cascade, onText) is { } terminal)
@@ -1022,6 +1045,21 @@ public sealed class CaptureMonitor : IDisposable
             OcrCascadePolicy.UnmatchedAreAllFast(_matchedIds, _config);
     }
 
+    private OcrPrepFlags ResolvePrepFlags(Bitmap bitmap, CascadeContext cascade)
+    {
+        OcrPrepFlags? auto = null;
+        if (OcrPrepResolver.NeedsAutoAnalysis(cascade.Config, cascade.ProcessName))
+        {
+            auto = _prepAnalyzer.GetOrAnalyze(
+                bitmap,
+                cascade.ProcessName,
+                cascade.Fingerprint,
+                msg => _logger.Debug(msg));
+        }
+
+        return OcrPrepResolver.Resolve(cascade.Config, cascade.ProcessName, auto);
+    }
+
     private readonly struct CascadeContext
     {
         private readonly Func<int> _pendingBehind;
@@ -1032,17 +1070,23 @@ public sealed class CaptureMonitor : IDisposable
             Func<int> pendingBehind,
             PhaseProfiler profiler,
             AppLogger logger,
-            CascadeMatchState? match = null)
+            CascadeMatchState? match = null,
+            string? processName = null,
+            ulong fingerprint = 0)
         {
             Config = config;
             Clock = clock;
             _pendingBehind = pendingBehind;
             Match = match ?? new CascadeMatchState(config, config.FastMatchThresholdPercent, profiler, logger);
+            ProcessName = processName;
+            Fingerprint = fingerprint;
         }
 
         public AppConfig Config { get; }
         public Stopwatch Clock { get; }
         public CascadeMatchState Match { get; }
+        public string? ProcessName { get; }
+        public ulong Fingerprint { get; }
         /// <summary>Frames waiting behind the one currently being OCR'd (re-read each check).</summary>
         public int PendingBehind => _pendingBehind();
         public int FastMatchThresholdPercent => Config.FastMatchThresholdPercent;
