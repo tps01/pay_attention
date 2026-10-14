@@ -142,6 +142,7 @@ public partial class SettingsWindow : Window
         MonitorModeBox.SelectedItem = config.MonitorSelection;
         RefreshMonitors(config.SpecificMonitorIndex);
         MonitorMode_Changed(null, null!);
+        RefreshPerformanceHints();
     }
 
     public void ShowAdvancedTab()
@@ -249,7 +250,94 @@ public partial class SettingsWindow : Window
     private void MonitorMode_Changed(object? sender, SelectionChangedEventArgs e)
     {
         SpecificMonitorBox.IsEnabled = MonitorModeBox.SelectedItem is MonitorSelection.Specific;
+        if (!_loadingUi)
+            RefreshPerformanceHints();
     }
+
+    private void PerformanceHintField_Changed(object sender, TextChangedEventArgs e)
+    {
+        if (!_loadingUi)
+            RefreshPerformanceHints();
+    }
+
+    private void PerformanceHintCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_loadingUi)
+            RefreshPerformanceHints();
+    }
+
+    /// <summary>
+    /// Show amber ⚠ glyphs beside form values that are likely costly on this PC.
+    /// Hints follow the live form (no Save required); values are never auto-changed.
+    /// </summary>
+    private void RefreshPerformanceHints()
+    {
+        var multiMonitor = ScreenGrabber.GetMonitors().Count > 1;
+        var monitorAll = MonitorModeBox.SelectedItem is MonitorSelection.All;
+        var warnMonitorAll = multiMonitor && monitorAll;
+        SetPerfHint(
+            MonitorAllPerfHint,
+            warnMonitorAll,
+            "More than one monitor detected. Limiting capture scope to one monitor is recommended for optimal performance.");
+        MonitorAllPerfCaption.Visibility = warnMonitorAll ? Visibility.Visible : Visibility.Collapsed;
+
+        var gray = OcrEnableGrayBox.IsChecked == true;
+        var adaptive = OcrEnableAdaptiveBox.IsChecked == true;
+        var neon = OcrEnableNeonBox.IsChecked == true;
+        var terminal = OcrEnableTerminalBox.IsChecked == true;
+        SetPerfHint(OcrGrayPerfHint, gray, "Adds an extra OCR pass per frame (more CPU).");
+        SetPerfHint(OcrAdaptivePerfHint, adaptive, "Adds an adaptive-contrast OCR pass per frame (more CPU).");
+        SetPerfHint(OcrNeonPerfHint, neon, "Adds a neon high-contrast OCR pass per frame (more CPU).");
+        SetPerfHint(
+            OcrTerminalPerfHint,
+            terminal,
+            "Terminal ROI passes crop and re-OCR dark regions — often the costliest optional pass.");
+
+        var extraPassCount = (gray ? 1 : 0) + (adaptive ? 1 : 0) + (neon ? 1 : 0) + (terminal ? 1 : 0);
+        MultiPassPerfBanner.Visibility = extraPassCount >= 2 ? Visibility.Visible : Visibility.Collapsed;
+
+        var maxWidth = TryParseUiInt(OcrMaxWidthBox.Text);
+        SetPerfHint(
+            OcrMaxWidthPerfHint,
+            maxWidth is > 1600,
+            "OCR max width above 1600px increases CPU and OCR time. Prefer Optimize for this PC or a leaner Quality preset on weaker machines.");
+
+        var absMax = TryParseUiInt(OcrAbsoluteMaxWidthBox.Text);
+        SetPerfHint(
+            OcrAbsoluteMaxWidthPerfHint,
+            absMax is > 1920,
+            "Absolute max width above 1920px can make boosted OCR very expensive on multi-monitor captures.");
+
+        var interval = TryParseUiInt(OcrIntervalBox.Text);
+        SetPerfHint(
+            OcrIntervalPerfHint,
+            warnMonitorAll && interval is < 500,
+            "A short OCR interval with All monitors is especially heavy. Prefer Primary/Specific, or raise the interval.");
+
+        var fastBudget = TryParseUiInt(OcrCascadeBudgetFastBox.Text);
+        var idleBudget = OcrApplyBudgetWhenIdleBox.IsChecked == true;
+        var warnIdleTight = idleBudget && fastBudget is <= 600;
+        SetPerfHint(
+            OcrIdleBudgetPerfHint,
+            warnIdleTight,
+            "Idle cascade budget with a short Fast budget can abort searches early on large captures. Prefer Primary/Specific, or raise the Fast budget if misses increase.");
+        SetPerfHint(
+            OcrFastBudgetPerfHint,
+            warnIdleTight,
+            "Fast cascade budget ≤ 600ms while Apply budget when idle is on — incomplete cascades are common on All-monitor grabs.");
+    }
+
+    private static void SetPerfHint(System.Windows.Controls.TextBlock glyph, bool show, string tooltip)
+    {
+        glyph.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        glyph.ToolTip = show ? tooltip : null;
+    }
+
+    private static int? TryParseUiInt(string? text) =>
+        int.TryParse(text?.Trim(), System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var n)
+            ? n
+            : null;
 
     private void AddTrigger_Click(object sender, RoutedEventArgs e)
     {

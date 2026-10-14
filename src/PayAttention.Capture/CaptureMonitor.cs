@@ -477,10 +477,10 @@ public sealed class CaptureMonitor : IDisposable
                 // Interim callbacks already fired for this text; log summary only.
                 PublishMatches(text, ocr.LastMatches, logMatchSummary: true);
 
-                // Total miss, or a search cut short with an idle queue: sample the static scene
-                // again. A finished search that already matched stays quiet so absent triggers
-                // in a long list do not re-OCR forever (whitelist / many-trigger case) — but
-                // ScheduleResample still re-checks unmatched sticky text after a TTL (#19).
+                // Finished total miss → AllowResample immediately. Finished partial hit → quiet
+                // (ScheduleResample still re-checks unmatched sticky text after a TTL).
+                // Cut short → never AllowResample (avoids idle budget thrash); schedule when
+                // unmatched so sticky text is retried without spinning incomplete cascades.
                 // Whitelist Selected: only count triggers allowed for this FG — OCR may see
                 // another listed app's phrase without being allowed to fire it.
                 // AllMinusBlacklisted: one pane's hit must not silence OCR while other panes'

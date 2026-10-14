@@ -7,6 +7,17 @@
         MinHeight="560" MinWidth="780"
         WindowStartupLocation="CenterScreen"
         Background="#F4F6F8">
+  <Window.Resources>
+    <!-- Amber ⚠ shown beside settings that are likely costly on this PC. -->
+    <Style x:Key="PerfWarningGlyph" TargetType="TextBlock">
+      <Setter Property="Text" Value="⚠" />
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="Foreground" Value="#B45309" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Visibility" Value="Collapsed" />
+      <Setter Property="Cursor" Value="Help" />
+    </Style>
+  </Window.Resources>
   <DockPanel Margin="16">
     <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
       <Button Content="Import…" Width="90" Margin="0,0,8,0" Click="Import_Click" />
@@ -202,8 +213,12 @@
 
                 <TextBlock Grid.Row="1" Grid.Column="0" Text="OCR interval (ms)" VerticalAlignment="Center" Margin="0,0,0,8"
                            ToolTip="Capture period between screen grabs. Use 250–500ms with Fast OCR for briefly visible terminal lines. Optimize for this PC may change this." />
-                <TextBox x:Name="OcrIntervalBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                         ToolTip="Capture period between screen grabs. Use 250–500ms with Fast OCR for briefly visible terminal lines. Optimize for this PC may change this." />
+                <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,0,0,8">
+                  <TextBox x:Name="OcrIntervalBox" Width="120" HorizontalAlignment="Left"
+                           TextChanged="PerformanceHintField_Changed"
+                           ToolTip="Capture period between screen grabs. Use 250–500ms with Fast OCR for briefly visible terminal lines. Optimize for this PC may change this." />
+                  <TextBlock x:Name="OcrIntervalPerfHint" Style="{StaticResource PerfWarningGlyph}" Margin="8,0,0,0" />
+                </StackPanel>
 
                 <TextBlock Grid.Row="2" Grid.Column="0" Text="Fast match threshold" VerticalAlignment="Center" Margin="0,0,0,8"
                            ToolTip="For Fast OCR triggers only: how closely OCR text must match the trigger (similarity, not Windows OCR confidence). 100 is strictest; lower is more reactive but may false-fire. Thorough triggers ignore this." />
@@ -243,10 +258,16 @@
 
                 <TextBlock Grid.Row="7" Grid.Column="0" Text="Monitor" VerticalAlignment="Center"
                            ToolTip="Used when capture scope is Monitor. Primary/Specific are fastest. All scans every display (slower; avoid with Fast OCR on multi-monitor)." />
-                <StackPanel Grid.Row="7" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal">
-                  <ComboBox x:Name="MonitorModeBox" Width="140" Margin="0,0,8,0" SelectionChanged="MonitorMode_Changed"
-                            ToolTip="Used when capture scope is Monitor. Primary/Specific are fastest. All scans every display (slower; avoid with Fast OCR on multi-monitor)." />
-                  <ComboBox x:Name="SpecificMonitorBox" Width="280" />
+                <StackPanel Grid.Row="7" Grid.Column="1" Grid.ColumnSpan="2">
+                  <StackPanel Orientation="Horizontal">
+                    <ComboBox x:Name="MonitorModeBox" Width="140" Margin="0,0,8,0" SelectionChanged="MonitorMode_Changed"
+                              ToolTip="Used when capture scope is Monitor. Primary/Specific are fastest. All scans every display (slower; avoid with Fast OCR on multi-monitor)." />
+                    <ComboBox x:Name="SpecificMonitorBox" Width="280" Margin="0,0,8,0" />
+                    <TextBlock x:Name="MonitorAllPerfHint" Style="{StaticResource PerfWarningGlyph}" VerticalAlignment="Center" />
+                  </StackPanel>
+                  <TextBlock x:Name="MonitorAllPerfCaption" Margin="0,4,0,0" TextWrapping="Wrap" FontSize="11"
+                             Foreground="#B45309" Visibility="Collapsed"
+                             Text="More than one monitor detected. Limiting capture scope to one monitor is recommended for optimal performance." />
                 </StackPanel>
               </Grid>
             </GroupBox>
@@ -406,8 +427,12 @@
 
                 <TextBlock Grid.Row="0" Grid.Column="0" Text="OCR max width (px)" VerticalAlignment="Center" Margin="0,0,0,8"
                            ToolTip="Downscale width before OCR (960–3840). Higher = better OCR, more CPU." />
-                <TextBox x:Name="OcrMaxWidthBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                         ToolTip="Downscale width before OCR (960–3840). Higher = better OCR, more CPU." />
+                <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
+                  <TextBox x:Name="OcrMaxWidthBox" Width="120" HorizontalAlignment="Left"
+                           TextChanged="PerformanceHintField_Changed"
+                           ToolTip="Downscale width before OCR (960–3840). Higher = better OCR, more CPU." />
+                  <TextBlock x:Name="OcrMaxWidthPerfHint" Style="{StaticResource PerfWarningGlyph}" Margin="8,0,0,0" />
+                </StackPanel>
 
                 <TextBlock Grid.Row="1" Grid.Column="0" Text="OCR upscale (%)" VerticalAlignment="Center" Margin="0,0,0,8"
                            ToolTip="100 = none. Try 150–250 for small terminal fonts (100–400)." />
@@ -421,17 +446,29 @@
 
                 <TextBlock Grid.Row="3" Grid.Column="0" Text="Absolute max width (px)" VerticalAlignment="Center" Margin="0,0,0,8"
                            ToolTip="Hard cap after upscale (960–3840). Keeps boosted OCR from becoming 4K-wide on weak PCs." />
-                <TextBox x:Name="OcrAbsoluteMaxWidthBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                         ToolTip="Hard cap after upscale (960–3840). Keeps boosted OCR from becoming 4K-wide on weak PCs." />
+                <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
+                  <TextBox x:Name="OcrAbsoluteMaxWidthBox" Width="120" HorizontalAlignment="Left"
+                           TextChanged="PerformanceHintField_Changed"
+                           ToolTip="Hard cap after upscale (960–3840). Keeps boosted OCR from becoming 4K-wide on weak PCs." />
+                  <TextBlock x:Name="OcrAbsoluteMaxWidthPerfHint" Style="{StaticResource PerfWarningGlyph}" Margin="8,0,0,0" />
+                </StackPanel>
 
                 <CheckBox x:Name="OcrInvertBox" Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,0,0,8"
                           Content="Extra invert pass for OCR"
                           ToolTip="Adds an invert-only OCR pass. Adaptive grayscale contrast and neon boost already run when enabled below; captures stay full color." />
-                <CheckBox x:Name="OcrEnableGrayBox" Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="2"
-                          Content="Extra grayscale pass for OCR"
-                          ToolTip="Adds a plain luma grayscale OCR pass (no contrast stretch). Adaptive and neon passes already convert to gray when enabled below; captures stay full color." />
+                <StackPanel Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal">
+                  <CheckBox x:Name="OcrEnableGrayBox"
+                            Content="Extra grayscale pass for OCR"
+                            Checked="PerformanceHintCheck_Changed" Unchecked="PerformanceHintCheck_Changed"
+                            ToolTip="Adds a plain luma grayscale OCR pass (no contrast stretch). Adaptive and neon passes already convert to gray when enabled below; captures stay full color." />
+                  <TextBlock x:Name="OcrGrayPerfHint" Style="{StaticResource PerfWarningGlyph}" Margin="8,0,0,0" />
+                </StackPanel>
               </Grid>
             </GroupBox>
+
+            <TextBlock x:Name="MultiPassPerfBanner" Margin="0,0,0,12" TextWrapping="Wrap" FontSize="11"
+                       Foreground="#B45309" Visibility="Collapsed"
+                       Text="⚠ Multiple extra OCR passes are enabled. Each pass increases per-frame cost and can exceed the Fast cascade budget." />
 
             <GroupBox Header="OCR cascade" Padding="10" Margin="0,0,0,12">
               <Grid>
@@ -452,15 +489,27 @@
                   <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <CheckBox x:Name="OcrEnableAdaptiveBox" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
-                          Content="Enable adaptive contrast pass" Margin="0,0,0,8"
-                          ToolTip="Second OCR pass with contrast stretch + invert." />
-                <CheckBox x:Name="OcrEnableNeonBox" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
-                          Content="Enable neon high-contrast pass" Margin="0,0,0,8"
-                          ToolTip="Third OCR pass tuned for neon-on-black terminals." />
-                <CheckBox x:Name="OcrEnableTerminalBox" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
-                          Content="Enable terminal ROI passes" Margin="0,0,0,8"
-                          ToolTip="Crop dark terminal-like regions and re-OCR at higher scale." />
+                <StackPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,0,0,8">
+                  <CheckBox x:Name="OcrEnableAdaptiveBox"
+                            Content="Enable adaptive contrast pass"
+                            Checked="PerformanceHintCheck_Changed" Unchecked="PerformanceHintCheck_Changed"
+                            ToolTip="Second OCR pass with contrast stretch + invert." />
+                  <TextBlock x:Name="OcrAdaptivePerfHint" Style="{StaticResource PerfWarningGlyph}" Margin="8,0,0,0" />
+                </StackPanel>
+                <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,0,0,8">
+                  <CheckBox x:Name="OcrEnableNeonBox"
+                            Content="Enable neon high-contrast pass"
+                            Checked="PerformanceHintCheck_Changed" Unchecked="PerformanceHintCheck_Changed"
+                            ToolTip="Third OCR pass tuned for neon-on-black terminals." />
+                  <TextBlock x:Name="OcrNeonPerfHint" Style="{StaticResource PerfWarningGlyph}" Margin="8,0,0,0" />
+                </StackPanel>
+                <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,0,0,8">
+                  <CheckBox x:Name="OcrEnableTerminalBox"
+                            Content="Enable terminal ROI passes"
+                            Checked="PerformanceHintCheck_Changed" Unchecked="PerformanceHintCheck_Changed"
+                            ToolTip="Crop dark terminal-like regions and re-OCR at higher scale." />
+                  <TextBlock x:Name="OcrTerminalPerfHint" Style="{StaticResource PerfWarningGlyph}" Margin="8,0,0,0" />
+                </StackPanel>
 
                 <TextBlock Grid.Row="3" Grid.Column="0" Text="Terminal max regions" VerticalAlignment="Center" Margin="0,0,0,8"
                            ToolTip="How many terminal-like crops to OCR (0–4)." />
@@ -479,17 +528,25 @@
 
                 <TextBlock Grid.Row="6" Grid.Column="0" Text="Fast cascade budget (ms)" VerticalAlignment="Center" Margin="0,0,0,8"
                            ToolTip="Stop searching a frame after this long when only Fast triggers remain (100–30000)." />
-                <TextBox x:Name="OcrCascadeBudgetFastBox" Grid.Row="6" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
-                         ToolTip="Stop searching a frame after this long when only Fast triggers remain (100–30000)." />
+                <StackPanel Grid.Row="6" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
+                  <TextBox x:Name="OcrCascadeBudgetFastBox" Width="120" HorizontalAlignment="Left"
+                           TextChanged="PerformanceHintField_Changed"
+                           ToolTip="Stop searching a frame after this long when only Fast triggers remain (100–30000)." />
+                  <TextBlock x:Name="OcrFastBudgetPerfHint" Style="{StaticResource PerfWarningGlyph}" Margin="8,0,0,0" />
+                </StackPanel>
 
                 <TextBlock Grid.Row="7" Grid.Column="0" Text="Thorough cascade budget (ms)" VerticalAlignment="Center" Margin="0,0,0,8"
                            ToolTip="Stop searching a frame after this long when Thorough triggers remain (100–60000)." />
                 <TextBox x:Name="OcrCascadeBudgetThoroughBox" Grid.Row="7" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
                          ToolTip="Stop searching a frame after this long when Thorough triggers remain (100–60000)." />
 
-                <CheckBox x:Name="OcrApplyBudgetWhenIdleBox" Grid.Row="8" Grid.Column="0" Grid.ColumnSpan="2"
-                          Content="Apply cascade budget even when idle (no backlog)" Margin="0,0,0,8"
-                          ToolTip="Off (High default): budgets only when newer frames are waiting. On: always cap cascade time." />
+                <StackPanel Grid.Row="8" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,0,0,8">
+                  <CheckBox x:Name="OcrApplyBudgetWhenIdleBox"
+                            Content="Apply cascade budget even when idle (no backlog)"
+                            Checked="PerformanceHintCheck_Changed" Unchecked="PerformanceHintCheck_Changed"
+                            ToolTip="Off (High default): budgets only when newer frames are waiting. On: always cap cascade time." />
+                  <TextBlock x:Name="OcrIdleBudgetPerfHint" Style="{StaticResource PerfWarningGlyph}" Margin="8,0,0,0" />
+                </StackPanel>
                 <CheckBox x:Name="UseBackgroundPriorityBox" Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="2"
                           Content="Run capture/OCR at background priority"
                           ToolTip="BelowNormal thread priority so foreground apps stay responsive. Takes effect after Save + monitoring restart." />
