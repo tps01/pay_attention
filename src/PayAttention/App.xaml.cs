@@ -60,6 +60,11 @@ public partial class App : Application, IDisposable
                 MessageBoxImage.Warning);
             _logger.Warn("Config reset to defaults after load failure. Backup: " + (load.CorruptBackupPath ?? "(none)"));
         }
+        else if (!string.IsNullOrEmpty(load.Warning))
+        {
+            MessageBox.Show(load.Warning, "pay_attention", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _logger.Warn(load.Warning);
+        }
 
         AutostartService.SetEnabled(_config.StartWithWindows, Environment.ProcessPath ?? string.Empty);
 
@@ -329,6 +334,8 @@ public partial class App : Application, IDisposable
         }
         catch (Exception ex)
         {
+            _hotkey?.Dispose();
+            _hotkey = null;
             _logger.Warn($"Could not register hotkey '{_config.PauseHotkey}': {ex.Message}");
             MessageBox.Show(
                 $"Could not register pause hotkey '{_config.PauseHotkey}'.\n{ex.Message}\n\nChange it in Settings if needed.",

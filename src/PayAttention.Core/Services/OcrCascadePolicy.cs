@@ -77,18 +77,27 @@ public static class OcrCascadePolicy
     /// <summary>
     /// Backlog budget: Fast when every unmatched trigger is Fast (or none remain).
     /// </summary>
-    public static bool UnmatchedAreAllFast(IReadOnlySet<Guid> matchedIds, AppConfig config)
+    public static bool UnmatchedAreAllFast(
+        IReadOnlySet<Guid> matchedIds,
+        AppConfig config,
+        string? foregroundProcess = null)
     {
-        var unmatched = EnabledTriggers(config).Where(t => !matchedIds.Contains(t.Id)).ToList();
+        var unmatched = EnabledTriggers(config)
+            .Where(t => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, t.Id))
+            .Where(t => !matchedIds.Contains(t.Id))
+            .ToList();
         return unmatched.Count == 0 || unmatched.All(t => t.OcrMode == OcrSpeedMode.Fast);
     }
 
     /// <summary>
     /// Deep OCR (tiles/bands) is for Thorough misses — the inverse of
-    /// <see cref="UnmatchedAreAllFast"/>.
+    /// <see cref="UnmatchedAreAllFast"/>. Triggers outside the foreground scope are ignored.
     /// </summary>
-    public static bool NeedsDeepCascade(IReadOnlySet<Guid> matchedIds, AppConfig config) =>
-        !UnmatchedAreAllFast(matchedIds, config);
+    public static bool NeedsDeepCascade(
+        IReadOnlySet<Guid> matchedIds,
+        AppConfig config,
+        string? foregroundProcess = null) =>
+        !UnmatchedAreAllFast(matchedIds, config, foregroundProcess);
 
     /// <summary>
     /// Whether to allow an immediate resample of the same static scene.

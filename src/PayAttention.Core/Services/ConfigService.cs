@@ -8,6 +8,8 @@ public sealed class ConfigLoadResult
     public required AppConfig Config { get; init; }
     public bool ResetToDefaults { get; init; }
     public string? CorruptBackupPath { get; init; }
+    /// <summary>Set when defaults are in memory but the file on disk was left alone.</summary>
+    public string? Warning { get; init; }
 }
 
 public sealed class ConfigService
@@ -18,10 +20,15 @@ public sealed class ConfigService
     public string LogDirectory { get; }
 
     public ConfigService()
-    {
-        AppDataDirectory = Path.Combine(
+        : this(Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "pay_attention");
+            "pay_attention"))
+    {
+    }
+
+    internal ConfigService(string appDataDirectory)
+    {
+        AppDataDirectory = appDataDirectory;
         ConfigPath = Path.Combine(AppDataDirectory, "config.json");
         DefaultCaptureDirectory = Path.Combine(AppDataDirectory, "captures");
         LogDirectory = Path.Combine(AppDataDirectory, "logs");
@@ -45,35 +52,30 @@ public sealed class ConfigService
         try
         {
             var json = File.ReadAllText(ConfigPath);
-            var config = JsonSerializer.Deserialize<AppConfig>(json, JsonDefaults.Options) ?? CreateDefault();
-            // Upgrade older configs that never had an applications key.
-            if (json.IndexOf("\"applications\"", StringComparison.OrdinalIgnoreCase) < 0)
+            AppConfig config;
+            try
+            {
+                config = JsonSerializer.Deserialize<AppConfig>(json, JsonDefaults.Options) ?? CreateDefault();
+            }
+            catch (JsonException)
+            {
+                return ResetCorruptFile();
+            }
+
+            // Upgrade older configs that never had an applications property.
+            // A trigger whose text is "applications" must not count as that property.
+            if (!RootHasProperty(json, "applications"))
                 config.Applications = ApplicationScopeEvaluator.CreateDefaultApplications();
             Normalize(config);
             return new ConfigLoadResult { Config = config };
         }
-        catch
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            string? backup = null;
-            try
-            {
-                backup = ConfigPath + ".corrupt." + DateTime.UtcNow.ToString(
-                    "yyyyMMddHHmmss",
-                    System.Globalization.CultureInfo.InvariantCulture);
-                File.Copy(ConfigPath, backup, overwrite: true);
-            }
-            catch
-            {
-                // ignore backup failures
-            }
-
-            var defaults = CreateDefault();
-            Save(defaults);
             return new ConfigLoadResult
             {
-                Config = defaults,
-                ResetToDefaults = true,
-                CorruptBackupPath = backup
+                Config = CreateDefault(),
+                Warning = "Settings could not be read (" + ex.Message +
+                          "). Defaults are in use for this session. The existing file was left in place."
             };
         }
     }
@@ -84,7 +86,61 @@ public sealed class ConfigService
         Directory.CreateDirectory(AppDataDirectory);
         Directory.CreateDirectory(config.CaptureDirectory);
         var json = JsonSerializer.Serialize(config, JsonDefaults.Options);
-        File.WriteAllText(ConfigPath, json);
+        WriteAtomic(ConfigPath, json);
+    }
+
+    private ConfigLoadResult ResetCorruptFile()
+    {
+        string? backup = null;
+        try
+        {
+            backup = ConfigPath + ".corrupt." + DateTime.UtcNow.ToString(
+                "yyyyMMddHHmmss",
+                System.Globalization.CultureInfo.InvariantCulture);
+            File.Copy(ConfigPath, backup, overwrite: true);
+        }
+        catch
+        {
+            // ignore backup failures
+        }
+
+        var defaults = CreateDefault();
+        Save(defaults);
+        return new ConfigLoadResult
+        {
+            Config = defaults,
+            ResetToDefaults = true,
+            CorruptBackupPath = backup
+        };
+    }
+
+    private static bool RootHasProperty(string json, string name)
+    {
+        using var doc = JsonDocument.Parse(json, new JsonDocumentOptions
+        {
+            CommentHandling = JsonCommentHandling.Skip,
+            AllowTrailingCommas = true
+        });
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            return true;
+
+        foreach (var prop in doc.RootElement.EnumerateObject())
+        {
+            if (prop.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static void WriteAtomic(string path, string contents)
+    {
+        var temp = path + ".tmp";
+        File.WriteAllText(temp, contents);
+        if (File.Exists(path))
+            File.Replace(temp, path, destinationBackupFileName: null);
+        else
+            File.Move(temp, path);
     }
 
     public void ExportTo(string path, AppConfig config)

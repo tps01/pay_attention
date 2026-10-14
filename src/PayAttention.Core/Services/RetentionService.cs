@@ -9,23 +9,37 @@ public static class RetentionService
         if (!Directory.Exists(captureDirectory))
             return 0;
 
-        // Top-level capture files + per-event *_sequence folders (each folder is one unit).
+        // Companion files that share a base name (still + video + sidecar) are one unit.
+        // Each *_sequence folder is one unit.
         var units = new List<RetentionUnit>();
 
+        var groups = new Dictionary<string, List<FileInfo>>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in Directory.EnumerateFiles(captureDirectory)
                      .Where(f => CaptureExtensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase)))
         {
             try
             {
                 var info = new FileInfo(file);
-                if (info.Exists)
-                    units.Add(RetentionUnit.ForFile(info));
+                if (!info.Exists)
+                    continue;
+                // Still + video + sidecar share a base name and are one capture.
+                var key = Path.GetFileNameWithoutExtension(info.Name);
+                if (!groups.TryGetValue(key, out var list))
+                {
+                    list = [];
+                    groups[key] = list;
+                }
+
+                list.Add(info);
             }
             catch
             {
                 // skip inaccessible
             }
         }
+
+        foreach (var group in groups.Values)
+            units.Add(RetentionUnit.ForFiles(group));
 
         foreach (var dir in Directory.EnumerateDirectories(captureDirectory))
         {
@@ -80,37 +94,46 @@ public static class RetentionService
 
     private static bool TryDelete(RetentionUnit unit, AppLogger? logger)
     {
-        try
+        var deletedAny = false;
+        foreach (var path in unit.Paths)
         {
-            if (unit.IsDirectory)
-                Directory.Delete(unit.Path, recursive: true);
-            else
-                File.Delete(unit.Path);
-            return true;
+            try
+            {
+                if (unit.IsDirectory)
+                    Directory.Delete(path, recursive: true);
+                else
+                    File.Delete(path);
+                deletedAny = true;
+            }
+            catch (Exception ex)
+            {
+                logger?.Warn($"Failed to delete capture {Path.GetFileName(path)}: {ex.Message}");
+            }
         }
-        catch (Exception ex)
-        {
-            logger?.Warn($"Failed to delete capture {Path.GetFileName(unit.Path)}: {ex.Message}");
+
+        if (!deletedAny)
             return false;
-        }
+
+        // A leftover companion still counts until a later pass removes it.
+        return unit.Paths.All(path => unit.IsDirectory ? !Directory.Exists(path) : !File.Exists(path));
     }
 
     private sealed class RetentionUnit
     {
-        public required string Path { get; init; }
+        public required IReadOnlyList<string> Paths { get; init; }
         public required DateTime CreatedUtc { get; init; }
         public required bool IsDirectory { get; init; }
 
-        public static RetentionUnit ForFile(FileInfo info) => new()
+        public static RetentionUnit ForFiles(IReadOnlyList<FileInfo> files) => new()
         {
-            Path = info.FullName,
-            CreatedUtc = info.CreationTimeUtc,
+            Paths = files.Select(f => f.FullName).ToList(),
+            CreatedUtc = files.Max(f => f.CreationTimeUtc),
             IsDirectory = false
         };
 
         public static RetentionUnit ForDirectory(DirectoryInfo info) => new()
         {
-            Path = info.FullName,
+            Paths = [info.FullName],
             CreatedUtc = info.CreationTimeUtc,
             IsDirectory = true
         };

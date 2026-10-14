@@ -93,6 +93,85 @@ public sealed class ScreenshotSequenceTests
         }
     }
 
+    [Fact]
+    public void Retention_counts_record_still_and_video_as_one_item()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "pa_ret_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var newer = Path.Combine(root, "20260102_120000_000_err_record");
+        var older = Path.Combine(root, "20260101_120000_000_other_screenshot");
+        File.WriteAllText(newer + ".jpg", "still");
+        File.WriteAllText(newer + ".avi", "video");
+        File.WriteAllText(newer + ".json", "{}");
+        File.WriteAllText(older + ".jpg", "shot");
+        var now = DateTime.UtcNow;
+        File.SetCreationTimeUtc(newer + ".jpg", now);
+        File.SetCreationTimeUtc(newer + ".avi", now);
+        File.SetCreationTimeUtc(newer + ".json", now);
+        File.SetCreationTimeUtc(older + ".jpg", now.AddMinutes(-5));
+
+        try
+        {
+            var deleted = PayAttention.Core.Services.RetentionService.Enforce(root, maxAgeDays: 0, maxFiles: 1);
+            Assert.Equal(1, deleted);
+            Assert.True(File.Exists(newer + ".jpg"));
+            Assert.True(File.Exists(newer + ".avi"));
+            Assert.True(File.Exists(newer + ".json"));
+            Assert.False(File.Exists(older + ".jpg"));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void PlaybackFps_follows_actual_frame_spacing()
+    {
+        var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var frames = Enumerable.Range(0, 30)
+            .Select(i => new BufferedFrame
+            {
+                JpegBytes = [1],
+                Timestamp = start.AddMilliseconds(500 * i),
+                Width = 8,
+                Height = 8
+            })
+            .ToList();
+
+        Assert.Equal(2, CaptureWriter.PlaybackFps(frames, requestedFps: 3));
+    }
+
+    [Fact]
+    public void Mjpeg_riff_size_matches_the_file()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "pa_avi_" + Guid.NewGuid().ToString("N") + ".avi");
+        using var bmp = new Bitmap(16, 16);
+        using (var g = Graphics.FromImage(bmp))
+            g.Clear(Color.Red);
+        var frame = new BufferedFrame
+        {
+            JpegBytes = ImageHelpers.EncodeJpeg(bmp, 70),
+            Timestamp = DateTimeOffset.UtcNow,
+            Width = bmp.Width,
+            Height = bmp.Height
+        };
+
+        try
+        {
+            MjpegAviWriter.Write(root, [frame], fps: 3);
+            var bytes = File.ReadAllBytes(root);
+            var riffSize = BitConverter.ToInt32(bytes, 4);
+            Assert.Equal(bytes.Length - 8, riffSize);
+        }
+        finally
+        {
+            if (File.Exists(root))
+                File.Delete(root);
+        }
+    }
+
     private static BufferedFrame MakeFrame(Bitmap bmp, DateTimeOffset timestamp)
     {
         var jpeg = ImageHelpers.EncodeJpeg(bmp, 70);

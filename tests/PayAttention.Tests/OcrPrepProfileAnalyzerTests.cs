@@ -58,12 +58,16 @@ public class OcrPrepProfileAnalyzerTests
         using var neon = MakeNeonTerminal(200, 120);
         using var bright = MakeSolid(200, 120, Color.White);
         var logs = 0;
-        var first = analyzer.GetOrAnalyze(neon, "wt", fingerprint: 0xABCD_0000_1234_5678UL, _ => logs++);
-        // Same high-32-bit coarse bucket → cache hit even if low bits differ / bitmap changes.
-        var second = analyzer.GetOrAnalyze(bright, "wt", fingerprint: 0xABCD_0000_FFFF_FFFFUL, _ => logs++);
+        var fingerprint = 0xABCD_0000_1234_5678UL;
+        var first = analyzer.GetOrAnalyze(neon, "wt", fingerprint, _ => logs++);
+        var second = analyzer.GetOrAnalyze(bright, "wt", fingerprint, _ => logs++);
         Assert.True(first.Neon);
         Assert.True(second.Neon);
         Assert.Equal(1, logs);
+
+        var third = analyzer.GetOrAnalyze(bright, "wt", fingerprint: 0xABCD_0000_FFFF_FFFFUL, _ => logs++);
+        Assert.False(third.Neon);
+        Assert.Equal(2, logs);
     }
 
     private static Bitmap MakeSolid(int w, int h, Color color)

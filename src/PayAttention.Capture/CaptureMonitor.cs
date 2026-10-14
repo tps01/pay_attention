@@ -33,6 +33,11 @@ public sealed class CaptureMonitor : IDisposable
     private const int DebugOcrSnippetMaxChars = 500;
     private static readonly TimeSpan EnqueueSkipLogInterval = TimeSpan.FromSeconds(30);
 
+    private readonly object _lifecycleLock = new();
+    private bool _restartAfterStop;
+    private bool _restartPaused;
+    private int _stopEpoch;
+
     private AppConfig _config;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
@@ -94,93 +99,188 @@ public sealed class CaptureMonitor : IDisposable
 
     public void Start()
     {
-        if (IsRunning)
-            return;
-
-        if (!_ocr.IsAvailable)
+        lock (_lifecycleLock)
         {
-            RaiseStatus("Error", "Windows OCR is unavailable on this system.");
-            _logger.Error("Windows OCR engine could not be created.");
-            return;
-        }
+            if (_disposed)
+                return;
+            // Still inside a cancelled OCR pass: do not open a second pipeline.
+            if (_loopTask is { IsCompleted: false })
+                return;
+            if (_loopTask is not null || _cts is not null || _ocrQueue is not null)
+                ReleasePipeline();
 
-        _paused = false;
-        _stickyWhitelistForeground = null;
-        _lastProfileFlushTimestamp = Stopwatch.GetTimestamp();
-        _forceFullGrab = true;
-        _lastEnqueueSkipped = false;
-        _lastCaptureForeground = null;
-        _skippedGrabCount = 0;
-        _enqueueSkipStreak = 0;
-        _lastEnqueueSkipLogUtc = DateTimeOffset.MinValue;
-        _cts = new CancellationTokenSource();
-        int queueCapacity;
-        bool backgroundPriority;
-        lock (_configLock)
-        {
-            queueCapacity = _config.OcrQueueCapacity;
-            backgroundPriority = _config.UseBackgroundPriority;
-        }
-
-        _ocrQueue = new OcrFrameQueue(queueCapacity);
-        _loopTask = Task.Run(async () =>
-        {
-            if (backgroundPriority)
+            if (!_ocr.IsAvailable)
             {
-                try
-                {
-                    Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
-                }
-                catch
-                {
-                    // Priority is best-effort on locked-down images.
-                }
+                RaiseStatus("Error", "Windows OCR is unavailable on this system.");
+                _logger.Error("Windows OCR engine could not be created.");
+                return;
             }
 
-            await RunPipelineAsync(_cts.Token).ConfigureAwait(false);
-        });
-        RaiseStatus("Monitoring", "OCR monitoring started.");
-        _logger.Info(
-            $"Monitoring started (queue={queueCapacity}, backgroundPriority={backgroundPriority}).");
-        if (_logger.MinLevel == LogLevel.Debug)
-        {
+            _paused = false;
+            _stickyWhitelistForeground = null;
+            _lastProfileFlushTimestamp = Stopwatch.GetTimestamp();
+            _forceFullGrab = true;
+            _lastEnqueueSkipped = false;
+            _lastCaptureForeground = null;
+            _skippedGrabCount = 0;
+            _enqueueSkipStreak = 0;
+            _lastEnqueueSkipLogUtc = DateTimeOffset.MinValue;
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
+            int queueCapacity;
+            bool backgroundPriority;
+            lock (_configLock)
+            {
+                queueCapacity = _config.OcrQueueCapacity;
+                backgroundPriority = _config.UseBackgroundPriority;
+            }
+
+            _ocrQueue = new OcrFrameQueue(queueCapacity);
+            _loopTask = Task.Run(async () =>
+            {
+                if (backgroundPriority)
+                {
+                    try
+                    {
+                        Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+                    }
+                    catch
+                    {
+                        // Priority is best-effort on locked-down images.
+                    }
+                }
+
+                await RunPipelineAsync(token).ConfigureAwait(false);
+            });
+            RaiseStatus("Monitoring", "OCR monitoring started.");
             _logger.Info(
-                $"Debug logging on (OCR snippets in logs). Log folder: {_logger.LogDirectory}. " +
-                $"Static unmatched scenes re-OCR every {OcrFrameQueue.StaticSceneResampleSeconds}s.");
+                $"Monitoring started (queue={queueCapacity}, backgroundPriority={backgroundPriority}).");
+            if (_logger.MinLevel == LogLevel.Debug)
+            {
+                _logger.Info(
+                    $"Debug logging on (OCR snippets in logs). Log folder: {_logger.LogDirectory}. " +
+                    $"Static unmatched scenes re-OCR every {OcrFrameQueue.StaticSceneResampleSeconds}s.");
+            }
         }
     }
 
     /// <summary>
     /// Stop then Start so queue capacity and worker priority pick up the latest config.
-    /// No-op when monitoring is not running.
+    /// No-op when monitoring is not running. If OCR does not exit within the stop wait,
+    /// the new session starts when that pass finishes.
     /// </summary>
     public void RestartIfRunning()
     {
-        if (!IsRunning)
-            return;
-        var wasPaused = _paused;
-        Stop();
-        Start();
-        if (wasPaused)
-            SetPaused(true);
+        lock (_lifecycleLock)
+        {
+            if (_disposed || _loopTask is not { IsCompleted: false })
+                return;
+            _restartAfterStop = true;
+            _restartPaused = _paused;
+        }
+
+        StopCore();
     }
 
     public void Stop()
     {
-        if (_cts is null && _loopTask is null)
-            return;
+        lock (_lifecycleLock)
+        {
+            _restartAfterStop = false;
+            _stopEpoch++;
+        }
 
-        _cts?.Cancel();
-        _ocrQueue?.Complete();
+        StopCore();
+    }
+
+    private void StopCore()
+    {
+        Task? loop;
+        lock (_lifecycleLock)
+        {
+            if (_cts is null && _loopTask is null)
+                return;
+
+            _cts?.Cancel();
+            _ocrQueue?.Complete();
+            loop = _loopTask;
+        }
+
+        var finished = false;
         try
         {
-            _loopTask?.Wait(TimeSpan.FromSeconds(5));
+            // Thorough OCR can outlast a short wait. Do not drop the task and start another.
+            finished = loop is null || loop.Wait(TimeSpan.FromSeconds(60));
         }
         catch (AggregateException)
         {
-            // ignore cancellation
+            finished = loop is null || loop.IsCompleted;
         }
 
+        if (!finished)
+        {
+            _logger.Warn(
+                "Monitoring did not exit within 60s after cancel. Another session waits until OCR finishes.");
+            RaiseStatus("Stopping", "Waiting for the current OCR pass to finish.");
+            loop!.ContinueWith(
+                _ => FinishStop(),
+                CancellationToken.None,
+                TaskContinuationOptions.None,
+                TaskScheduler.Default);
+            return;
+        }
+
+        FinishStop();
+    }
+
+    private void FinishStop()
+    {
+        bool restart;
+        bool paused;
+        var stopped = false;
+        int epoch;
+        lock (_lifecycleLock)
+        {
+            if (_loopTask is { IsCompleted: false })
+                return;
+
+            if (_cts is not null || _ocrQueue is not null || _loopTask is not null)
+            {
+                ReleasePipeline();
+                stopped = true;
+            }
+
+            restart = _restartAfterStop && !_disposed;
+            paused = _restartPaused;
+            epoch = _stopEpoch;
+            _restartAfterStop = false;
+        }
+
+        if (stopped)
+        {
+            FlushProfile("stop");
+            RaiseStatus("Stopped", "Monitoring stopped.");
+            _logger.Info("Monitoring stopped.");
+        }
+
+        if (!restart)
+            return;
+
+        lock (_lifecycleLock)
+        {
+            // A later Stop (or exit) wins over a deferred settings restart.
+            if (epoch != _stopEpoch || _disposed)
+                return;
+        }
+
+        Start();
+        if (paused)
+            SetPaused(true);
+    }
+
+    /// <summary>Caller holds <see cref="_lifecycleLock"/>.</summary>
+    private void ReleasePipeline()
+    {
         _ocrQueue?.Dispose();
         _ocrQueue = null;
         _cts?.Dispose();
@@ -189,9 +289,6 @@ public sealed class CaptureMonitor : IDisposable
         _ringBuffer.Clear();
         _sequenceRing.Clear();
         _fireGate.Reset();
-        FlushProfile("stop");
-        RaiseStatus("Stopped", "Monitoring stopped.");
-        _logger.Info("Monitoring stopped.");
     }
 
     public void SetPaused(bool paused)
@@ -205,6 +302,7 @@ public sealed class CaptureMonitor : IDisposable
 
     private async Task RunPipelineAsync(CancellationToken token)
     {
+        var queue = _ocrQueue;
         try
         {
             await Task.WhenAll(
@@ -213,7 +311,7 @@ public sealed class CaptureMonitor : IDisposable
         }
         finally
         {
-            _ocrQueue?.Complete();
+            queue?.Complete();
         }
     }
 
@@ -412,7 +510,8 @@ public sealed class CaptureMonitor : IDisposable
                         if (!published.Add(match.Trigger.Id))
                             return false;
 
-                        var key = $"{match.Trigger.Id}:{match.MatchedPortion}";
+                        // Id only: regex MatchedPortion changes with each OCR hit and would skip debounce.
+                        var key = match.Trigger.Id.ToString("N");
                         if (_fireGate.ShouldFire(key, debounce, queued.Fingerprint, out var suppressReason))
                         {
                             _logger.Debug(
@@ -762,7 +861,7 @@ public sealed class CaptureMonitor : IDisposable
                 {
                     // Only stop the All-pass when every trigger matched — never because
                     // monitor 0 burned the Fast time budget (each monitor gets its own clock).
-                    if (sharedMatch.AllEnabledMatched())
+                    if (sharedMatch.AllInScopeMatched())
                         break;
 
                     // Fresh cascade budget per monitor; backlog pressure only on the first.
@@ -783,7 +882,7 @@ public sealed class CaptureMonitor : IDisposable
                     parts.Add(part.Text);
                     cutShort |= part.CutShortForBacklog;
 
-                    if (sharedMatch.AllEnabledMatched())
+                    if (sharedMatch.AllInScopeMatched())
                         return ToFrameResult(string.Join("\n", parts), cutShort: false, sharedMatch);
                 }
 
@@ -837,7 +936,7 @@ public sealed class CaptureMonitor : IDisposable
         // One cascade clock for the whole frame — later windows inherit elapsed time.
         for (var i = 0; i < targets.Count; i++)
         {
-            if (sharedCascade.Match.AllEnabledMatched())
+            if (sharedCascade.Match.AllInScopeMatched())
                 break;
             if (IsCascadeOverBudget(sharedCascade))
             {
@@ -875,7 +974,7 @@ public sealed class CaptureMonitor : IDisposable
             parts.Add(part.Text);
             cutShort |= part.CutShortForBacklog;
 
-            if (sharedCascade.Match.AllEnabledMatched())
+            if (sharedCascade.Match.AllInScopeMatched())
                 return ToFrameResult(string.Join("\n", parts), cutShort: false, sharedCascade.Match);
         }
 
@@ -977,7 +1076,7 @@ public sealed class CaptureMonitor : IDisposable
         var joined = JoinChunks(chunks);
         var found = cascade.Match.Observe(joined);
         onText?.Invoke(joined, found);
-        if (cascade.Match.AllEnabledMatched())
+        if (cascade.Match.AllInScopeMatched())
             return ToFrameResult(joined, cutShort: false, cascade.Match);
         if (IsCascadeOverBudget(cascade))
             return ToFrameResult(joined, cutShort: true, cascade.Match);
@@ -999,6 +1098,7 @@ public sealed class CaptureMonitor : IDisposable
         private readonly int _threshold;
         private readonly PhaseProfiler _profiler;
         private readonly AppLogger _logger;
+        private readonly string? _foregroundProcess;
         private string? _lastObservedText;
         private IReadOnlyList<TriggerMatchResult> _lastMatches = [];
 
@@ -1006,12 +1106,14 @@ public sealed class CaptureMonitor : IDisposable
             AppConfig config,
             int threshold,
             PhaseProfiler profiler,
-            AppLogger logger)
+            AppLogger logger,
+            string? foregroundProcess)
         {
             _config = config;
             _threshold = threshold;
             _profiler = profiler;
             _logger = logger;
+            _foregroundProcess = foregroundProcess;
         }
 
         public IReadOnlySet<Guid> MatchedIds => _matchedIds;
@@ -1035,14 +1137,18 @@ public sealed class CaptureMonitor : IDisposable
             return _lastMatches;
         }
 
-        public bool AllEnabledMatched() =>
-            OcrCascadePolicy.AllEnabledMatched(_matchedIds, _config);
+        /// <summary>
+        /// True when every trigger allowed for this frame's foreground has matched.
+        /// Out-of-scope triggers must not keep tiles and bands running.
+        /// </summary>
+        public bool AllInScopeMatched() =>
+            OcrCascadePolicy.AllAllowedMatched(_matchedIds, _config, _foregroundProcess);
 
         public bool NeedsDeepCascade() =>
-            OcrCascadePolicy.NeedsDeepCascade(_matchedIds, _config);
+            OcrCascadePolicy.NeedsDeepCascade(_matchedIds, _config, _foregroundProcess);
 
         public bool UnmatchedAreAllFast() =>
-            OcrCascadePolicy.UnmatchedAreAllFast(_matchedIds, _config);
+            OcrCascadePolicy.UnmatchedAreAllFast(_matchedIds, _config, _foregroundProcess);
     }
 
     private OcrPrepFlags ResolvePrepFlags(Bitmap bitmap, CascadeContext cascade)
@@ -1077,7 +1183,8 @@ public sealed class CaptureMonitor : IDisposable
             Config = config;
             Clock = clock;
             _pendingBehind = pendingBehind;
-            Match = match ?? new CascadeMatchState(config, config.FastMatchThresholdPercent, profiler, logger);
+            Match = match ?? new CascadeMatchState(
+                config, config.FastMatchThresholdPercent, profiler, logger, processName);
             ProcessName = processName;
             Fingerprint = fingerprint;
         }
@@ -1111,7 +1218,7 @@ public sealed class CaptureMonitor : IDisposable
     private static bool ObserveAndShouldStop(List<string> chunks, CascadeContext cascade)
     {
         cascade.Match.Observe(JoinChunks(chunks));
-        return cascade.Match.AllEnabledMatched() || IsCascadeOverBudget(cascade);
+        return cascade.Match.AllInScopeMatched() || IsCascadeOverBudget(cascade);
     }
 
     private async Task RecognizeTerminalRegionsAsync(
@@ -1501,8 +1608,13 @@ public sealed class CaptureMonitor : IDisposable
         if (_disposed)
             return;
         _disposed = true;
+        lock (_lifecycleLock)
+            _restartAfterStop = false;
         Stop();
-        _ringBuffer.Dispose();
-        _sequenceRing.Dispose();
+        if (_loopTask is null || _loopTask.IsCompleted)
+        {
+            _ringBuffer.Dispose();
+            _sequenceRing.Dispose();
+        }
     }
 }

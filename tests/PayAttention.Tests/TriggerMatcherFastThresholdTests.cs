@@ -114,4 +114,44 @@ public class TriggerMatcherFastThresholdTests
         Assert.Single(matches);
         Assert.Equal("ok", matches[0].Trigger.Text);
     }
+
+    [Fact]
+    public void Contains_underscore_only_needle_does_not_match_everything()
+    {
+        var triggers = new[]
+        {
+            new TriggerConfig { Text = "___", Match = MatchMode.Contains, Enabled = true }
+        };
+
+        Assert.Empty(TriggerMatcher.FindMatches("hello world", triggers));
+    }
+
+    [Fact]
+    public void FoldConfusables_treats_b_and_g_the_same_in_either_case()
+    {
+        Assert.Equal(
+            TriggerMatcher.FoldConfusables("BigData"),
+            TriggerMatcher.FoldConfusables("bigdata"));
+
+        var triggers = new[]
+        {
+            new TriggerConfig { Text = "BigData", Match = MatchMode.Contains, Enabled = true }
+        };
+        var matches = TriggerMatcher.FindMatches("see big data here", triggers);
+        Assert.Single(matches);
+    }
+
+    [Fact]
+    public void Regex_catastrophic_pattern_does_not_hang()
+    {
+        var triggers = new[]
+        {
+            new TriggerConfig { Text = "(a+)+$", Match = MatchMode.Regex, Enabled = true }
+        };
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var matches = TriggerMatcher.FindMatches(new string('a', 28) + "b", triggers);
+        Assert.Empty(matches);
+        Assert.True(started.Elapsed < TimeSpan.FromSeconds(5));
+    }
 }
