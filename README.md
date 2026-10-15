@@ -11,11 +11,11 @@ Local only, with no cloud support.
 Prefer a **[GitHub Release](https://github.com/tps01/pay_attention/releases)** zip (exe + user guide). To publish one after pushing code:
 
 ```powershell
-git tag v1.5.1
-git push origin v1.5.1
+git tag v1.5.2
+git push origin v1.5.2
 ```
 
-That runs CI, builds the win-x64 package, and attaches `PayAttention-1.5.1-win-x64.zip` to the release.
+That runs CI, builds the win-x64 package, and attaches `PayAttention-1.5.2-win-x64.zip` to the release.
 
 Or build locally with the .NET 8 SDK and hand them `publish\`:
 
@@ -59,7 +59,7 @@ Or build locally with the .NET 8 SDK and hand them `publish\`:
 .\scripts\publish.ps1
 ```
 
-Optional version for About / assembly info: `.\scripts\publish.ps1 -Version 1.5.1`
+Optional version for About / assembly info: `.\scripts\publish.ps1 -Version 1.5.2`
 
 Or `scripts\publish.bat` if script execution is blocked. Output: `publish\PayAttention.exe` and usually `publish\PayAttention-UserGuide.pdf`.
 
@@ -100,15 +100,18 @@ Can capture anything on screen, including secrets. Treat `captures\` and `logs\`
 
 ## Tests
 
+.NET unit tests:
+
 ```powershell
-pip install -r tests/requirements.txt
-pytest tests -q
+dotnet test tests/PayAttention.Tests/PayAttention.Tests.csproj -c Release
 ```
 
-On-screen E2E (interactive session; keep harness uncovered). Pairwise matrix covers
-difficulty × scroll × speed × multi-pane × OCR × whitelist/blacklist (8 cases). Optional
-`test_screen_e2e_many.py` still stresses 50-trigger quiet behavior.
+Interactive Colosseum suite (Windows desktop; keep harness windows uncovered). Covers
+Settings/FlaUI flows, capture/debounce/pause/scope, pairwise OCR matrix, 50-trigger
+slots, and dmesg/MCE stream latency. Needs **colosseum-core 0.16.2+** and
+**colosseum-gui 0.2.3+** from [GitHub Releases](https://github.com/tps01/colosseum-gui/releases).
+See [tests/colosseum/README.md](tests/colosseum/README.md).
 
 ```powershell
-pytest tests/test_screen_e2e_pairwise.py tests/test_screen_e2e_many.py -q
+colosseum run-suite tests/colosseum/suite.toml -g tests/colosseum/config.toml
 ```

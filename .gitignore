@@ -59,7 +59,11 @@ captures/
 __pycache__/
 *.py[cod]
 .venv/
+.venv-*/
 venv/
+
+# Colosseum (run artifacts: debug.log, execution.sqlite, summary, WATS, captures)
+outputs/
 
 # Logs
 *.log

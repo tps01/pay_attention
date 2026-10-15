@@ -100,9 +100,6 @@ internal sealed class OcrFrameQueue : IDisposable
             }
 
             forcedResample = sceneUnchanged && !fgChanged && forceDue;
-            _lastEnqueuedFingerprint = fingerprint;
-            _lastEnqueuedForeground = fg;
-            _forceResampleAfterUtc = null;
         }
 
         var cloneStart = Stopwatch.GetTimestamp();
@@ -129,6 +126,15 @@ internal sealed class OcrFrameQueue : IDisposable
                 profiler.Record("enqueue.clone", cloneStart, logger);
             decision = OcrEnqueueDecision.Dropped;
             return false;
+        }
+
+        // Commit the gate only after the frame is queued. A failed write must not
+        // look like this scene was already sampled.
+        lock (_fingerprintLock)
+        {
+            _lastEnqueuedFingerprint = fingerprint;
+            _lastEnqueuedForeground = fg;
+            _forceResampleAfterUtc = null;
         }
 
         if (profiler is not null && logger is not null)
@@ -166,7 +172,9 @@ internal sealed class OcrFrameQueue : IDisposable
     {
         try
         {
-            if (await _channel.Reader.WaitToReadAsync(token).ConfigureAwait(false))
+            // Drop-oldest on the capture thread can steal the item WaitToReadAsync observed.
+            // Retry; null means the channel is completed and empty (worker shutdown).
+            while (await _channel.Reader.WaitToReadAsync(token).ConfigureAwait(false))
             {
                 if (_channel.Reader.TryRead(out var frame))
                     return frame;

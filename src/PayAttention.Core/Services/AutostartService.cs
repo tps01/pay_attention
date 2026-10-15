@@ -14,6 +14,8 @@ public static class AutostartService
 
         if (enabled)
         {
+            if (string.IsNullOrWhiteSpace(executablePath))
+                return;
             key.SetValue(ValueName, $"\"{executablePath}\"");
         }
         else if (key.GetValue(ValueName) is not null)

@@ -65,10 +65,11 @@ public static class CaptureWriter
             sidecar.ScreenshotFile = Path.GetFileName(stillPath) ?? baseName + stillExt;
         }
 
+        var playbackFps = PlaybackFps(frames, fps);
         if (format == RecordFormat.Gif)
-            GifWriter.Write(mediaPath, frames, fps);
+            GifWriter.Write(mediaPath, frames, playbackFps);
         else
-            MjpegAviWriter.Write(mediaPath, frames, fps);
+            MjpegAviWriter.Write(mediaPath, frames, playbackFps);
 
         sidecar.CaptureFile = Path.GetFileName(mediaPath) ?? baseName + extension;
         if (saveJson)
@@ -80,6 +81,35 @@ public static class CaptureWriter
     /// Creates a per-event sequence folder, writes pre-trigger buffered stills and the
     /// trigger-moment frame. Returns the folder path. Caller may append post-trigger frames.
     /// </summary>
+    /// <summary>
+    /// Container frame rate that plays <paramref name="frames"/> in about real time.
+    /// <paramref name="requestedFps"/> is the capture target; the ring may be slower when
+    /// OCR sampling is slower than that target.
+    /// </summary>
+    internal static int PlaybackFps(IReadOnlyList<BufferedFrame> frames, int requestedFps)
+    {
+        requestedFps = Math.Clamp(requestedFps, 1, 30);
+        if (frames.Count < 2)
+            return requestedFps;
+
+        var first = frames[0].Timestamp;
+        var last = frames[^1].Timestamp;
+        if (last < first)
+        {
+            first = last;
+            last = frames[0].Timestamp;
+        }
+
+        var span = last - first;
+        if (span < TimeSpan.FromMilliseconds(1))
+            return requestedFps;
+
+        var fps = (frames.Count - 1) / span.TotalSeconds;
+        if (double.IsNaN(fps) || double.IsInfinity(fps))
+            return requestedFps;
+        return (int)Math.Clamp(Math.Round(fps), 1, 30);
+    }
+
     public static string WriteScreenshotSequence(
         IReadOnlyList<BufferedFrame> preFrames,
         Bitmap triggerFrame,

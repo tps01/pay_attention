@@ -15,6 +15,8 @@ public static class TriggerMatcher
 {
     public const int DefaultFastMatchThresholdPercent = 90;
 
+    private static readonly TimeSpan RegexMatchTimeout = TimeSpan.FromSeconds(1);
+
     private static readonly ConcurrentDictionary<string, Regex?> RegexCache = new(StringComparer.Ordinal);
 
     private static readonly Regex WhitespaceCollapse = new(
@@ -63,6 +65,8 @@ public static class TriggerMatcher
                 case MatchMode.Exact:
                 {
                     var needle = Normalize(trigger.Text);
+                    if (needle.Length == 0)
+                        break;
                     var foldedNeedle = FoldConfusables(needle);
                     if (string.Equals(normalizedHaystack, needle, StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(foldedHaystack, foldedNeedle, StringComparison.OrdinalIgnoreCase) ||
@@ -79,7 +83,16 @@ public static class TriggerMatcher
                     var regex = GetCachedRegex(trigger.Text);
                     if (regex is null)
                         break;
-                    var match = regex.Match(ocrText);
+                    Match match;
+                    try
+                    {
+                        match = regex.Match(ocrText);
+                    }
+                    catch (RegexMatchTimeoutException)
+                    {
+                        break;
+                    }
+
                     if (match.Success)
                     {
                         results.Add(new TriggerMatchResult { Trigger = trigger, MatchedPortion = match.Value });
@@ -91,6 +104,8 @@ public static class TriggerMatcher
                 default:
                 {
                     var needle = Normalize(trigger.Text);
+                    if (needle.Length == 0)
+                        break;
                     var foldedNeedle = FoldConfusables(needle);
                     var compactNeedle = CompactAlnum(foldedNeedle);
                     var hit =
@@ -132,7 +147,8 @@ public static class TriggerMatcher
             {
                 return new Regex(
                     p,
-                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled,
+                    RegexMatchTimeout);
             }
             catch (ArgumentException)
             {
@@ -166,10 +182,10 @@ public static class TriggerMatcher
                 '0' or 'O' or 'o' or 'Ο' or 'ο' => '0',
                 '1' or 'l' or 'I' or 'i' or '|' or '¡' => '1',
                 '2' or 'Z' or 'z' => '2',
-                '3' or '9' or 'g' => '9', // 3/9 often confused at tiny sizes
+                '3' or '9' => '9', // 3/9 often confused at tiny sizes
                 '5' or 'S' or 's' => '5',
-                '8' or 'B' => '8',
-                '6' or 'G' => '6',
+                '8' or 'B' or 'b' => '8',
+                '6' or 'G' or 'g' => '6',
                 'A' or 'a' or 'Α' => 'a',
                 'E' or 'e' or '€' => 'e',
                 'C' or 'c' => 'c',
@@ -187,7 +203,6 @@ public static class TriggerMatcher
                 'X' or 'x' or '×' => 'x',
                 'Y' or 'y' => 'y',
                 'Q' or 'q' => 'q',
-                'b' => 'b',
                 _ when char.IsLetterOrDigit(ch) => char.ToLowerInvariant(ch),
                 // Punctuation / symbols → separator (OCR often drops or mangling these)
                 _ => ' '

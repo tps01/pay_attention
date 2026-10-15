@@ -14,7 +14,7 @@ public static class GifWriter
             throw new InvalidOperationException("No frames available to write GIF.");
 
         fps = Math.Clamp(fps, 1, 30);
-        var delayCs = Math.Max(1, (int)Math.Round(100.0 / fps));
+        var fallbackDelayCs = Math.Max(1, (int)Math.Round(100.0 / fps));
 
         var encoder = ImageCodecInfo.GetImageDecoders().FirstOrDefault(c => c.FormatID == ImageFormat.Gif.Guid)
             ?? throw new InvalidOperationException("GIF encoder not available.");
@@ -32,7 +32,7 @@ public static class GifWriter
                 using (var g = Graphics.FromImage(frame))
                     g.DrawImage(source, 0, 0, source.Width, source.Height);
 
-                SetGifTiming(frame, delayCs);
+                SetGifTiming(frame, FrameDelayCs(frames, i, fallbackDelayCs));
 
                 if (i == 0)
                 {
@@ -58,6 +58,24 @@ public static class GifWriter
         {
             animation?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Per-frame delay from timestamps so a buffer sampled slower than <paramref name="fallbackDelayCs"/>
+    /// still plays in about real time. GIF delay is in centiseconds.
+    /// </summary>
+    private static int FrameDelayCs(IReadOnlyList<BufferedFrame> frames, int index, int fallbackDelayCs)
+    {
+        var gap = TimeSpan.Zero;
+        if (index + 1 < frames.Count)
+            gap = frames[index + 1].Timestamp - frames[index].Timestamp;
+        else if (index > 0)
+            gap = frames[index].Timestamp - frames[index - 1].Timestamp;
+
+        if (gap <= TimeSpan.Zero)
+            return fallbackDelayCs;
+
+        return (int)Math.Clamp(Math.Round(gap.TotalSeconds * 100.0), 1, 1000);
     }
 
     private static void SetGifTiming(Image image, int delayCs)

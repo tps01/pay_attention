@@ -30,7 +30,8 @@ public static class MjpegAviWriter
         var frameCount = usable.Count;
         var microSecPerFrame = (int)Math.Round(1_000_000.0 / fps);
         var maxBytesPerSec = usable.Max(f => f.JpegBytes.Length) * fps;
-        var moviSize = usable.Sum(f => 8 + AlignEven(f.JpegBytes.Length));
+        // LIST size includes the 4-byte list type ("movi"), same as hdrl/strl above.
+        var moviSize = 4 + usable.Sum(f => 8 + AlignEven(f.JpegBytes.Length));
         var idx1Size = frameCount * 16;
         // hdrl: avih(64) + strl(strh 56 + strf 48 + junk?) + list overhead
         const int avihSize = 56;

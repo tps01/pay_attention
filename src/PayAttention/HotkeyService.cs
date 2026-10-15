@@ -31,10 +31,24 @@ public sealed class HotkeyService : IDisposable
         _source = new HwndSource(parameters);
         _source.AddHook(WndProc);
 
-        if (!NativeMethods.RegisterHotKey(_source.Handle, HotkeyId, modifiers, key))
-            throw new InvalidOperationException("RegisterHotKey failed. The combination may already be in use.");
+        try
+        {
+            if (!NativeMethods.RegisterHotKey(
+                    _source.Handle,
+                    HotkeyId,
+                    modifiers | NativeMethods.ModNoRepeat,
+                    key))
+            {
+                throw new InvalidOperationException("RegisterHotKey failed. The combination may already be in use.");
+            }
 
-        _registered = true;
+            _registered = true;
+        }
+        catch
+        {
+            Unregister();
+            throw;
+        }
     }
 
     public void Dispose() => Unregister();
@@ -123,6 +137,7 @@ public sealed class HotkeyService : IDisposable
         public const uint ModControl = 0x0002;
         public const uint ModShift = 0x0004;
         public const uint ModWin = 0x0008;
+        public const uint ModNoRepeat = 0x4000;
 
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);

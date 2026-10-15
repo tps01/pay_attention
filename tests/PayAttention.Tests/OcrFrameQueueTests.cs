@@ -109,6 +109,35 @@ public sealed class OcrFrameQueueTests
         Assert.Equal(OcrEnqueueDecision.SkippedUnchanged, skipped);
     }
 
+    [Fact]
+    public void Dropped_enqueue_does_not_stick_the_fingerprint_gate()
+    {
+        using var queue = new OcrFrameQueue(capacity: 1);
+        using var frame = MakeSolidFrame(Color.Olive);
+        var fp = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
+        queue.Complete();
+
+        Assert.False(queue.TryEnqueueIfChanged(frame, "alpha", fp, out var first));
+        Assert.Equal(OcrEnqueueDecision.Dropped, first);
+        Assert.False(queue.TryEnqueueIfChanged(frame, "alpha", fp, out var second));
+        Assert.Equal(OcrEnqueueDecision.Dropped, second);
+    }
+
+    [Fact]
+    public async Task ReadAsync_returns_queued_frame_then_null_after_complete()
+    {
+        using var queue = new OcrFrameQueue(capacity: 1);
+        using var frame = MakeSolidFrame(Color.Navy);
+        var fp = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
+        Assert.True(queue.TryEnqueueIfChanged(frame, "alpha", fp));
+        queue.Complete();
+
+        var read = await queue.ReadAsync(CancellationToken.None);
+        Assert.NotNull(read);
+        read.Dispose();
+        Assert.Null(await queue.ReadAsync(CancellationToken.None));
+    }
+
     private static CapturedFrame MakeSolidFrame(Color color)
     {
         var bitmap = new Bitmap(32, 32, PixelFormat.Format32bppArgb);

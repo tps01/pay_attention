@@ -456,14 +456,17 @@ public static class ScreenGrabber
                     TryAdd(process.MainWindowHandle);
                     foreach (ProcessThread thread in process.Threads)
                     {
-                        NativeMethods.EnumThreadWindows(
-                            (uint)thread.Id,
-                            (hwnd, _) =>
-                            {
-                                TryAdd(hwnd);
-                                return true;
-                            },
-                            IntPtr.Zero);
+                        using (thread)
+                        {
+                            NativeMethods.EnumThreadWindows(
+                                (uint)thread.Id,
+                                (hwnd, _) =>
+                                {
+                                    TryAdd(hwnd);
+                                    return true;
+                                },
+                                IntPtr.Zero);
+                        }
                     }
                 }
                 finally

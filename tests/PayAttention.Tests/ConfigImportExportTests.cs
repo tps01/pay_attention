@@ -143,5 +143,121 @@ public sealed class ConfigImportExportTests
                 File.Delete(path);
         }
     }
+
+    [Fact]
+    public void ResolveAppDataDirectory_honors_PAY_ATTENTION_APPDATA()
+    {
+        var previous = Environment.GetEnvironmentVariable("PAY_ATTENTION_APPDATA");
+        var root = Path.Combine(Path.GetTempPath(), "pa_appdata_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Environment.SetEnvironmentVariable("PAY_ATTENTION_APPDATA", root);
+            var resolved = ConfigService.ResolveAppDataDirectory();
+            Assert.Equal(Path.GetFullPath(root), resolved);
+            var service = new ConfigService();
+            Assert.True(service.IsIsolatedAppData);
+            Assert.Equal(Path.GetFullPath(root), service.AppDataDirectory);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PAY_ATTENTION_APPDATA", previous);
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_corrupt_json_resets_and_keeps_a_backup()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "pa_cfg_" + Guid.NewGuid().ToString("N"));
+        var service = new ConfigService(root);
+        Directory.CreateDirectory(root);
+        File.WriteAllText(service.ConfigPath, "{");
+
+        try
+        {
+            var load = service.LoadDetailed();
+            Assert.True(load.ResetToDefaults);
+            Assert.False(string.IsNullOrEmpty(load.CorruptBackupPath));
+            Assert.True(File.Exists(load.CorruptBackupPath));
+            Assert.Contains("\"triggers\"", File.ReadAllText(service.ConfigPath));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_locked_file_does_not_overwrite_it()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "pa_cfg_" + Guid.NewGuid().ToString("N"));
+        var service = new ConfigService(root);
+        Directory.CreateDirectory(root);
+        const string original = """{ "debounceSeconds": 12 }""";
+        File.WriteAllText(service.ConfigPath, original);
+
+        try
+        {
+            using var held = new FileStream(service.ConfigPath, FileMode.Open, FileAccess.Read, FileShare.None);
+            var load = service.LoadDetailed();
+            Assert.False(load.ResetToDefaults);
+            Assert.False(string.IsNullOrEmpty(load.Warning));
+            held.Dispose();
+            Assert.Equal(original, File.ReadAllText(service.ConfigPath));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_missing_applications_property_adds_default_blacklist()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "pa_cfg_" + Guid.NewGuid().ToString("N"));
+        var service = new ConfigService(root);
+        Directory.CreateDirectory(root);
+        File.WriteAllText(service.ConfigPath, """
+            {
+              "triggers": [ { "text": "applications", "enabled": true, "match": "contains" } ]
+            }
+            """);
+
+        try
+        {
+            var load = service.LoadDetailed();
+            Assert.Contains(load.Config.Applications, a =>
+                string.Equals(a.ProcessName, "payattention", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(load.Config.Triggers, t => t.Text == "applications");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_empty_applications_array_is_not_replaced()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "pa_cfg_" + Guid.NewGuid().ToString("N"));
+        var service = new ConfigService(root);
+        Directory.CreateDirectory(root);
+        File.WriteAllText(service.ConfigPath, """{ "applications": [] }""");
+
+        try
+        {
+            var load = service.LoadDetailed();
+            Assert.Empty(load.Config.Applications);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
 }
 

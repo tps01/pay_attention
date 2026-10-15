@@ -1,0 +1,15 @@
+name = "pay_attention_colosseum"
+setup = ["setup_build.py"]
+tests = [
+  "test_build_smoke.py",
+  "test_settings.py",
+  "test_screenshot.py",
+  "test_debounce.py",
+  "test_pause_hotkey.py",
+  "test_scope.py",
+  "test_pairwise.py",
+  "test_many.py",
+  "test_dmesg.py",
+]
+teardown = ["teardown_kill.py"]
+fail_fast = true

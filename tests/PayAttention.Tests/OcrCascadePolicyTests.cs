@@ -166,6 +166,31 @@ public class OcrCascadePolicyTests
     }
 
     [Fact]
+    public void NeedsDeepCascade_ignores_thorough_trigger_outside_foreground_scope()
+    {
+        var allowedFast = Trigger("alpha", OcrSpeedMode.Fast);
+        var blockedThorough = Trigger("beta", OcrSpeedMode.Thorough);
+        var config = ConfigWithTriggers(allowedFast, blockedThorough);
+        config.ApplicationScope = ApplicationScopeMode.Whitelisted;
+        config.Applications =
+        [
+            new ApplicationConfig
+            {
+                ProcessName = "notepad",
+                Enabled = true,
+                ListMode = ApplicationListMode.Whitelist,
+                TriggerFilter = ApplicationTriggerFilter.Selected,
+                TriggerIds = [allowedFast.Id]
+            }
+        ];
+
+        Assert.False(OcrCascadePolicy.NeedsDeepCascade(new HashSet<Guid>(), config, "notepad"));
+        Assert.False(OcrCascadePolicy.AllAllowedMatched(new HashSet<Guid>(), config, "notepad"));
+        Assert.True(OcrCascadePolicy.AllAllowedMatched(
+            new HashSet<Guid> { allowedFast.Id }, config, "notepad"));
+    }
+
+    [Fact]
     public void NeedsDeepCascade_true_when_a_thorough_trigger_is_still_missing()
     {
         var fast = Trigger("alpha", OcrSpeedMode.Fast);

@@ -1,5 +1,7 @@
 using System.Drawing;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Windows;
 using System.Windows.Forms;
@@ -25,12 +27,22 @@ public partial class App : Application, IDisposable
     private ToolStripMenuItem? _startStopItem;
     private string _statusText = "Stopped";
     private bool _cleanedUp;
+    /// <summary>CLI: show Settings as the main window (for FlaUI / Colosseum).</summary>
+    private bool _settingsOnly;
+    /// <summary>CLI: start monitoring without using the tray menu.</summary>
+    private bool _startOnLaunch;
+    /// <summary>Skip the NotifyIcon when Settings-only or isolated automation asks for it.</summary>
+    private bool _suppressTray;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
-        _instanceMutex = new Mutex(true, @"Local\pay_attention_single_instance", out var createdNew);
+        ParseLaunchArgs(e.Args);
+
+        var appData = ConfigService.ResolveAppDataDirectory();
+        var mutexName = InstanceMutexName(appData);
+        _instanceMutex = new Mutex(true, mutexName, out var createdNew);
         if (!createdNew)
         {
             MessageBox.Show(
@@ -42,11 +54,14 @@ public partial class App : Application, IDisposable
             return;
         }
 
-        _configService = new ConfigService();
+        _configService = new ConfigService(appData);
         _logger = new AppLogger(_configService.LogDirectory);
         var load = _configService.LoadDetailed();
         _config = load.Config;
         _logger.MinLevel = _config.LogLevel;
+
+        if (_configService.IsIsolatedAppData)
+            _logger.Info($"Isolated app data: {_configService.AppDataDirectory}");
 
         if (load.ResetToDefaults)
         {
@@ -60,8 +75,15 @@ public partial class App : Application, IDisposable
                 MessageBoxImage.Warning);
             _logger.Warn("Config reset to defaults after load failure. Backup: " + (load.CorruptBackupPath ?? "(none)"));
         }
+        else if (!string.IsNullOrEmpty(load.Warning))
+        {
+            MessageBox.Show(load.Warning, "pay_attention", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _logger.Warn(load.Warning);
+        }
 
-        AutostartService.SetEnabled(_config.StartWithWindows, Environment.ProcessPath ?? string.Empty);
+        // Never rewrite the user's Run key when using a temp app-data root.
+        if (!_configService.IsIsolatedAppData)
+            AutostartService.SetEnabled(_config.StartWithWindows, Environment.ProcessPath ?? string.Empty);
 
         _monitor = new CaptureMonitor(_config, _logger);
         _monitor.StatusChanged += (_, args) =>
@@ -94,7 +116,8 @@ public partial class App : Application, IDisposable
             });
         };
 
-        BuildTray();
+        if (!_suppressTray)
+            BuildTray();
         RegisterHotkey();
 
         if (!_monitor.OcrAvailable)
@@ -105,9 +128,11 @@ public partial class App : Application, IDisposable
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
         }
-        else if (_config.StartMonitoringOnLaunch)
+        else if (_startOnLaunch || _config.StartMonitoringOnLaunch)
         {
             _monitor.Start();
+            if (_startOnLaunch)
+                _logger.Info("Monitoring started via --start.");
         }
 
         UpdateTrayText();
@@ -117,6 +142,58 @@ public partial class App : Application, IDisposable
             _config.RetentionMaxFiles,
             _logger);
         _logger.EnforceRetention();
+
+        if (_settingsOnly)
+        {
+            OpenSettingsAsMainWindow();
+        }
+        else if (_suppressTray)
+        {
+            // No tray and no Settings window — stay alive until Exit / process kill.
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        }
+    }
+
+    private void ParseLaunchArgs(string[] args)
+    {
+        foreach (var raw in args)
+        {
+            var a = raw.Trim();
+            if (string.Equals(a, "--settings", StringComparison.OrdinalIgnoreCase))
+            {
+                _settingsOnly = true;
+                _suppressTray = true;
+            }
+            else if (string.Equals(a, "--start", StringComparison.OrdinalIgnoreCase))
+            {
+                _startOnLaunch = true;
+            }
+            else if (string.Equals(a, "--no-tray", StringComparison.OrdinalIgnoreCase))
+            {
+                _suppressTray = true;
+            }
+        }
+
+        // Headless monitoring for Colosseum: no tray, no Settings window.
+        if (_startOnLaunch && !_settingsOnly)
+            _suppressTray = true;
+    }
+
+    private static string InstanceMutexName(string appDataDirectory)
+    {
+        // Default installs keep the historical name. Isolated roots get their own mutex
+        // so Colosseum can run beside a normal tray instance.
+        var defaultDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "pay_attention");
+        if (string.Equals(
+                Path.GetFullPath(appDataDirectory),
+                Path.GetFullPath(defaultDir),
+                StringComparison.OrdinalIgnoreCase))
+            return @"Local\pay_attention_single_instance";
+
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(appDataDirectory)))[..16];
+        return $@"Local\pay_attention_single_instance_{hash}";
     }
 
     private void BuildTray()
@@ -212,6 +289,26 @@ public partial class App : Application, IDisposable
 
     private static string Truncate(string text) =>
         text.Length <= 63 ? text : text[..63];
+
+    private void OpenSettingsAsMainWindow()
+    {
+        _settingsWindow = new SettingsWindow(_config, _configService, _monitor, _logger);
+        _settingsWindow.ConfigSaved += (_, cfg) =>
+        {
+            _config = cfg;
+            _logger.MinLevel = cfg.LogLevel;
+            RegisterHotkey();
+            UpdateTrayText();
+        };
+        _settingsWindow.Closed += (_, _) =>
+        {
+            _settingsWindow = null;
+            ExitApp();
+        };
+        MainWindow = _settingsWindow;
+        _settingsWindow.Show();
+        _logger.Info("Settings opened via --settings.");
+    }
 
     private void OpenSettings(bool showAdvanced = false)
     {
@@ -329,6 +426,8 @@ public partial class App : Application, IDisposable
         }
         catch (Exception ex)
         {
+            _hotkey?.Dispose();
+            _hotkey = null;
             _logger.Warn($"Could not register hotkey '{_config.PauseHotkey}': {ex.Message}");
             MessageBox.Show(
                 $"Could not register pause hotkey '{_config.PauseHotkey}'.\n{ex.Message}\n\nChange it in Settings if needed.",

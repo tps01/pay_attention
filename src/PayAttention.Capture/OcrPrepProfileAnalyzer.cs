@@ -7,7 +7,8 @@ namespace PayAttention.Capture;
 
 /// <summary>
 /// Samples a frame’s color profile to decide which OCR prep passes Auto should enable.
-/// Results are cached per process (+ coarse fingerprint) so Auto is not re-run every pass.
+/// Results are cached per process and full frame fingerprint so a later, different
+/// frame in the same app does not reuse a neon or terminal decision.
 /// </summary>
 public sealed class OcrPrepProfileAnalyzer
 {
@@ -29,16 +30,15 @@ public sealed class OcrPrepProfileAnalyzer
         if (key.Length == 0)
             key = "(unknown)";
 
-        var coarseFp = fingerprint & 0xFFFF_FFFF_0000_0000UL;
         if (_cache.TryGetValue(key, out var hit) &&
-            hit.CoarseFingerprint == coarseFp &&
+            hit.Fingerprint == fingerprint &&
             DateTimeOffset.UtcNow - hit.At < CacheTtl)
         {
             return hit.Flags;
         }
 
         var flags = AnalyzeBitmap(source);
-        _cache[key] = new CacheEntry(flags, coarseFp, DateTimeOffset.UtcNow);
+        _cache[key] = new CacheEntry(flags, fingerprint, DateTimeOffset.UtcNow);
         logDebug?.Invoke(
             $"OCR prep Auto for {key}: adaptive={flags.Adaptive} neon={flags.Neon} " +
             $"gray={flags.Gray} invert={flags.Invert} terminal={flags.Terminal}");
@@ -159,5 +159,5 @@ public sealed class OcrPrepProfileAnalyzer
         double NeonFraction,
         double MeanChroma);
 
-    private sealed record CacheEntry(OcrPrepFlags Flags, ulong CoarseFingerprint, DateTimeOffset At);
+    private sealed record CacheEntry(OcrPrepFlags Flags, ulong Fingerprint, DateTimeOffset At);
 }
