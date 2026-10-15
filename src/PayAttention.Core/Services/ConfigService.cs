@@ -19,19 +19,44 @@ public sealed class ConfigService
     public string DefaultCaptureDirectory { get; }
     public string LogDirectory { get; }
 
+    /// <summary>
+    /// Uses <c>PAY_ATTENTION_APPDATA</c> when set (isolated Colosseum / harness runs);
+    /// otherwise <c>%LocalAppData%\pay_attention</c>.
+    /// </summary>
     public ConfigService()
-        : this(Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "pay_attention"))
+        : this(ResolveAppDataDirectory())
     {
     }
 
-    internal ConfigService(string appDataDirectory)
+    public ConfigService(string appDataDirectory)
     {
-        AppDataDirectory = appDataDirectory;
+        if (string.IsNullOrWhiteSpace(appDataDirectory))
+            throw new ArgumentException("App data directory is required.", nameof(appDataDirectory));
+
+        AppDataDirectory = Path.GetFullPath(appDataDirectory.Trim());
         ConfigPath = Path.Combine(AppDataDirectory, "config.json");
         DefaultCaptureDirectory = Path.Combine(AppDataDirectory, "captures");
         LogDirectory = Path.Combine(AppDataDirectory, "logs");
+        IsIsolatedAppData = !string.Equals(
+            AppDataDirectory,
+            Path.GetFullPath(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "pay_attention")),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>True when this process uses a non-default app-data root (tests / automation).</summary>
+    public bool IsIsolatedAppData { get; }
+
+    public static string ResolveAppDataDirectory()
+    {
+        var overrideDir = Environment.GetEnvironmentVariable("PAY_ATTENTION_APPDATA");
+        if (!string.IsNullOrWhiteSpace(overrideDir))
+            return Path.GetFullPath(overrideDir.Trim());
+
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "pay_attention");
     }
 
     public AppConfig Load() => LoadDetailed().Config;

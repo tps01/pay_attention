@@ -1,0 +1,9 @@
+# Placeholder. Suite setup_build.py writes an absolute-path gui.toml under the
+# isolated PAY_ATTENTION_APPDATA root and loads that. Keep this file so
+# `colosseum run-suite … -g tests/colosseum/config.toml` has a stable -g path
+# before setup runs (empty sections are fine).
+
+[[gui.desktop]]
+desktop_id = 1
+driver = "sim"
+title = "placeholder"

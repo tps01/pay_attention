@@ -145,6 +145,28 @@ public sealed class ConfigImportExportTests
     }
 
     [Fact]
+    public void ResolveAppDataDirectory_honors_PAY_ATTENTION_APPDATA()
+    {
+        var previous = Environment.GetEnvironmentVariable("PAY_ATTENTION_APPDATA");
+        var root = Path.Combine(Path.GetTempPath(), "pa_appdata_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Environment.SetEnvironmentVariable("PAY_ATTENTION_APPDATA", root);
+            var resolved = ConfigService.ResolveAppDataDirectory();
+            Assert.Equal(Path.GetFullPath(root), resolved);
+            var service = new ConfigService();
+            Assert.True(service.IsIsolatedAppData);
+            Assert.Equal(Path.GetFullPath(root), service.AppDataDirectory);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PAY_ATTENTION_APPDATA", previous);
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Load_corrupt_json_resets_and_keeps_a_backup()
     {
         var root = Path.Combine(Path.GetTempPath(), "pa_cfg_" + Guid.NewGuid().ToString("N"));
