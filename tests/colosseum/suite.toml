@@ -3,6 +3,7 @@ setup = ["setup_build.py"]
 tests = [
   "test_build_smoke.py",
   "test_settings.py",
+  "test_launch_args_list.py",
   "test_screenshot.py",
   "test_debounce.py",
   "test_pause_hotkey.py",

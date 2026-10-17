@@ -231,7 +231,7 @@ def load_gui() -> Path:
         pass
     cfg = appdata() / "gui.toml"
     write_gui_config(cfg)
-    col.config.load_config(str(cfg))
+    col.config.load_config(str(cfg), force=True)
     return cfg
 
 

@@ -55,7 +55,7 @@ def main() -> None:
             f"--x 40 --y 40 --w 420 --h 320 --easy"
         ),
     )
-    col.config.load_config(str(gui))
+    col.config.load_config(str(gui), force=True)
 
     col.gui.desktop.connect(desktop_id=2)
     col.gui.desktop.wait_stable(desktop_id=2, timeout_s=5.0)
@@ -78,7 +78,7 @@ def main() -> None:
             f"--x 40 --y 40 --w 420 --h 320 --easy"
         ),
     )
-    col.config.load_config(str(gui))
+    col.config.load_config(str(gui), force=True)
     col.gui.desktop.connect(desktop_id=2)
     col.gui.desktop.wait_stable(desktop_id=2, timeout_s=5.0)
     mid = snapshot_captures()

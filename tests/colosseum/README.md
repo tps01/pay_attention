@@ -10,8 +10,8 @@ isolated app-data folder** or harness stdout (`PASS`, `LATENCY`, …), not UIA O
 - .NET 8 SDK
 - Python 3.9+ with a venv
 - Product hooks: `PAY_ATTENTION_APPDATA`, `--settings`, `--start`
-- **colosseum-gui 0.2.3+** (`args=` on `[[gui.desktop]]`, chord `press_key` such as `ctrl+shift+p`)
-- **colosseum-core 0.16.2+** (suite script directory on `sys.path` for sibling helpers)
+- **colosseum-gui 0.3.1+** (`args=` as a string or list, chord `press_key` such as `ctrl+shift+p`)
+- **colosseum-core 0.16.6+** (suite script directory on `sys.path`; `load_config(..., force=True)` replaces the pinned `-g` file)
 
 ## Install Colosseum from GitHub Releases
 
@@ -25,8 +25,8 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
 pip install `
-  https://github.com/tps01/colosseum-core/releases/download/v0.16.2/colosseum_core-0.16.2-py3-none-any.whl `
-  https://github.com/tps01/colosseum-gui/releases/download/v0.2.3/colosseum_gui-0.2.3-py3-none-any.whl
+  https://github.com/tps01/colosseum-core/releases/download/v0.16.6/colosseum_core-0.16.6-py3-none-any.whl `
+  https://github.com/tps01/colosseum-gui/releases/download/v0.3.1/colosseum_gui-0.3.1-py3-none-any.whl
 ```
 
 Optional: [colosseum-shared 0.3.5+](https://github.com/tps01/colosseum-shared/releases/tag/v0.3.5) provides `verify_new_file` / `verify_no_new_file` if you want to replace the local capture pollers in `support_captures.py`.
@@ -50,6 +50,7 @@ Suite setup builds Release binaries, creates a temp app-data root, and writes an
 | --- | --- |
 | `test_build_smoke.py` | Solution Release build + xunit `PayAttention.Tests` |
 | `test_settings.py` | Settings window Save + config.json round-trip |
+| `test_launch_args_list.py` | FlaUI `args` list with a title that contains spaces |
 | `test_screenshot.py` | Fixture phrase → `*_screenshot.jpg` |
 | `test_debounce.py` | No second capture during debounce; new phrase fires |
 | `test_pause_hotkey.py` | `Ctrl+Shift+P` pauses then resumes |

@@ -108,8 +108,8 @@ dotnet test tests/PayAttention.Tests/PayAttention.Tests.csproj -c Release
 
 Interactive Colosseum suite (Windows desktop; keep harness windows uncovered). Covers
 Settings/FlaUI flows, capture/debounce/pause/scope, pairwise OCR matrix, 50-trigger
-slots, and dmesg/MCE stream latency. Needs **colosseum-core 0.16.2+** and
-**colosseum-gui 0.2.3+** from [GitHub Releases](https://github.com/tps01/colosseum-gui/releases).
+slots, and dmesg/MCE stream latency. Needs **colosseum-core 0.16.6+** and
+**colosseum-gui 0.3.1+** from [GitHub Releases](https://github.com/tps01/colosseum-gui/releases).
 See [tests/colosseum/README.md](tests/colosseum/README.md).
 
 ```powershell
