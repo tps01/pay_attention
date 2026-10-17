@@ -533,15 +533,18 @@ public static class ScreenGrabber
     {
         public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("user32.dll")]
         public static extern IntPtr GetForegroundWindow();
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool GetWindowRect(IntPtr hWnd, out Rect lpRect);
 
         public const int DwmwaExtendedFrameBounds = 9;
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("dwmapi.dll")]
         public static extern int DwmGetWindowAttribute(
             IntPtr hwnd,
@@ -549,29 +552,36 @@ public static class ScreenGrabber
             out Rect pvAttribute,
             int cbAttribute);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool IsIconic(IntPtr hWnd);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool IsWindowVisible(IntPtr hWnd);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("user32.dll")]
         public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, int nFlags);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool EnumThreadWindows(uint dwThreadId, EnumWindowsProc lpfn, IntPtr lParam);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);

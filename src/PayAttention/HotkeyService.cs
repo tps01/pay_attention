@@ -139,9 +139,11 @@ public sealed class HotkeyService : IDisposable
         public const uint ModWin = 0x0008;
         public const uint ModNoRepeat = 0x4000;
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     }

@@ -82,6 +82,7 @@ public class FrameFingerprintTests
     private static Bitmap MakePattern(int seed)
     {
         var bmp = new Bitmap(320, 240, PixelFormat.Format32bppArgb);
+#pragma warning disable CA5394 // Seeded fixture pixels, not a key or token
         var rng = new Random(seed);
         for (var y = 0; y < bmp.Height; y++)
         for (var x = 0; x < bmp.Width; x++)
@@ -89,6 +90,7 @@ public class FrameFingerprintTests
             var v = (byte)((x * 3 + y * 5 + rng.Next(20)) % 180);
             bmp.SetPixel(x, y, Color.FromArgb(255, v, (byte)(v / 2), 20));
         }
+#pragma warning restore CA5394
 
         return bmp;
     }
