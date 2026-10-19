@@ -94,6 +94,15 @@ public sealed class ConfigService
             Normalize(config);
             return new ConfigLoadResult { Config = config };
         }
+        catch (InvalidDataException ex)
+        {
+            return new ConfigLoadResult
+            {
+                Config = CreateDefault(),
+                Warning = "Settings are invalid (" + ex.Message +
+                          "). Monitoring is disabled. The existing file was left in place."
+            };
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return new ConfigLoadResult
@@ -112,6 +121,12 @@ public sealed class ConfigService
         Directory.CreateDirectory(config.CaptureDirectory);
         var json = JsonSerializer.Serialize(config, JsonDefaults.Options);
         WriteAtomic(ConfigPath, json);
+    }
+
+    public void ApplyAutostart(AppConfig config, string executablePath, Action<bool, string>? writer = null)
+    {
+        if (!IsIsolatedAppData)
+            (writer ?? AutostartService.SetEnabled)(config.StartWithWindows, executablePath);
     }
 
     private ConfigLoadResult ResetCorruptFile()
@@ -226,6 +241,44 @@ public sealed class ConfigService
 
     private void Normalize(AppConfig config)
     {
+        config.Triggers ??= [];
+        config.Applications ??= [];
+        RequireEnum(config.ApplicationScope, "applicationScope");
+        RequireEnum(config.CaptureScope, "captureScope");
+        RequireEnum(config.MonitorSelection, "monitorSelection");
+        RequireEnum(config.RecordFormat, "recordFormat");
+        RequireEnum(config.ScreenshotFormat, "screenshotFormat");
+        RequireEnum(config.LogLevel, "logLevel");
+        RequireEnum(config.AppliedPerformanceProfile, "appliedPerformanceProfile");
+        var triggerIds = new HashSet<Guid>();
+        foreach (var trigger in config.Triggers)
+        {
+            if (trigger is null)
+                throw new InvalidDataException("triggers must not contain null entries.");
+            RequireEnum(trigger.Match, "trigger.match");
+            RequireEnum(trigger.Action, "trigger.action");
+            RequireEnum(trigger.OcrMode, "trigger.ocrMode");
+            trigger.Text ??= string.Empty;
+            if (trigger.Id == Guid.Empty)
+                trigger.Id = Guid.NewGuid();
+            if (!triggerIds.Add(trigger.Id))
+                throw new InvalidDataException("Trigger IDs must be unique.");
+        }
+        var applicationIds = new HashSet<Guid>();
+        foreach (var app in config.Applications)
+        {
+            if (app is null)
+                throw new InvalidDataException("applications must not contain null entries.");
+            RequireEnum(app.ListMode, "application.listMode");
+            RequireEnum(app.TriggerFilter, "application.triggerFilter");
+            foreach (var prep in new[] { app.OcrAdaptive, app.OcrNeon, app.OcrGray, app.OcrInvert, app.OcrTerminal })
+                RequireEnum(prep, "application.ocrPrep");
+            if (app.Id == Guid.Empty)
+                app.Id = Guid.NewGuid();
+            if (!applicationIds.Add(app.Id))
+                throw new InvalidDataException("Application IDs must be unique.");
+        }
+        config.PauseHotkey ??= string.Empty;
         if (string.IsNullOrWhiteSpace(config.CaptureDirectory))
             config.CaptureDirectory = DefaultCaptureDirectory;
 
@@ -277,5 +330,11 @@ public sealed class ConfigService
         }
 
         ApplicationScopeEvaluator.PruneTriggerIds(config);
+    }
+
+    private static void RequireEnum<T>(T value, string field) where T : struct, Enum
+    {
+        if (!Enum.IsDefined(value))
+            throw new InvalidDataException($"Unknown {field}: {value}.");
     }
 }

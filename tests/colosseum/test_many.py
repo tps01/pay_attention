@@ -22,6 +22,9 @@ def _run_slot(slot: str) -> None:
 
 
 def main() -> None:
+    from support_captures import require_live_execution
+
+    require_live_execution()
     ensure_built()
     for slot in ("first", "mid", "last"):
         _run_slot(slot)

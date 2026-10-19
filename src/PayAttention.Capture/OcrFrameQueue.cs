@@ -25,10 +25,9 @@ internal sealed class OcrFrameQueue : IDisposable
     public const int DefaultCapacity = 4;
 
     /// <summary>
-    /// Stricter than fire-gate similarity: scrolling a single console line must still enqueue.
-    /// Default Hamming≤10 treats most line-scrolls as "same scene" after 8×8 downscale.
+    /// Content hashes must be equal to suppress a frame; line changes must enqueue.
     /// </summary>
-    public const int EnqueueMaxHammingDistance = 2;
+    public const int EnqueueMaxHammingDistance = 0;
 
     /// <summary>
     /// Re-OCR an unchanged scene after this long when enabled triggers remain unmatched
@@ -110,7 +109,10 @@ internal sealed class OcrFrameQueue : IDisposable
             frame.MonitorName,
             frame.ScreenBounds,
             fingerprint,
-            foregroundProcess);
+            foregroundProcess,
+            frame.Epoch,
+            frame.RecordFrames,
+            frame.SequenceFrames);
 
         while (!_channel.Writer.TryWrite(queued))
         {
@@ -223,6 +225,13 @@ internal sealed class OcrFrameQueue : IDisposable
 
     public void Complete() => _channel.Writer.TryComplete();
 
+    public void ClearPending()
+    {
+        while (_channel.Reader.TryRead(out var frame))
+            frame.Dispose();
+        AllowResample();
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -243,7 +252,10 @@ internal sealed class OcrQueuedFrame : IDisposable
         string monitorName,
         Rectangle screenBounds,
         ulong fingerprint,
-        string? foregroundProcess)
+        string? foregroundProcess,
+        long epoch = 0,
+        IReadOnlyList<BufferedFrame>? recordFrames = null,
+        IReadOnlyList<BufferedFrame>? sequenceFrames = null)
     {
         Bitmap = bitmap;
         Timestamp = timestamp;
@@ -252,6 +264,9 @@ internal sealed class OcrQueuedFrame : IDisposable
         ScreenBounds = screenBounds;
         Fingerprint = fingerprint;
         ForegroundProcess = foregroundProcess;
+        Epoch = epoch;
+        RecordFrames = recordFrames;
+        SequenceFrames = sequenceFrames;
     }
 
     public Bitmap Bitmap { get; }
@@ -261,6 +276,9 @@ internal sealed class OcrQueuedFrame : IDisposable
     public Rectangle ScreenBounds { get; }
     public ulong Fingerprint { get; }
     public string? ForegroundProcess { get; }
+    public long Epoch { get; }
+    public IReadOnlyList<BufferedFrame>? RecordFrames { get; }
+    public IReadOnlyList<BufferedFrame>? SequenceFrames { get; }
 
     public CapturedFrame ToCapturedFrame() => new()
     {
@@ -268,7 +286,10 @@ internal sealed class OcrQueuedFrame : IDisposable
         Timestamp = Timestamp,
         MonitorIndex = MonitorIndex,
         MonitorName = MonitorName,
-        ScreenBounds = ScreenBounds
+        ScreenBounds = ScreenBounds,
+        Epoch = Epoch,
+        RecordFrames = RecordFrames,
+        SequenceFrames = SequenceFrames
     };
 
     public void Dispose() => Bitmap.Dispose();

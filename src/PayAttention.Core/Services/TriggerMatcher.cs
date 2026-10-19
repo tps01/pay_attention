@@ -28,7 +28,7 @@ public static class TriggerMatcher
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex NonAlnum = new(
-        @"[^0-9a-z]+",
+        @"[^\p{L}\p{Nd}]+",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     public static bool HasAnyMatch(
@@ -63,77 +63,75 @@ public static class TriggerMatcher
             switch (trigger.Match)
             {
                 case MatchMode.Exact:
-                {
-                    var needle = Normalize(trigger.Text);
-                    if (needle.Length == 0)
-                        break;
-                    var foldedNeedle = FoldConfusables(needle);
-                    if (string.Equals(normalizedHaystack, needle, StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(foldedHaystack, foldedNeedle, StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(compactHaystack, CompactAlnum(foldedNeedle), StringComparison.OrdinalIgnoreCase))
                     {
-                        results.Add(new TriggerMatchResult { Trigger = trigger, MatchedPortion = trigger.Text });
-                        if (stopAfterFirst)
-                            return results;
+                        var needle = Normalize(trigger.Text);
+                        if (needle.Length == 0)
+                            break;
+                        var foldedNeedle = FoldConfusables(needle);
+                        var compactNeedle = CompactAlnum(foldedNeedle);
+                        if (string.Equals(normalizedHaystack, needle, StringComparison.OrdinalIgnoreCase) ||
+                            (!string.IsNullOrWhiteSpace(foldedNeedle) && string.Equals(foldedHaystack, foldedNeedle, StringComparison.OrdinalIgnoreCase)) ||
+                            (compactNeedle.Length > 0 && string.Equals(compactHaystack, compactNeedle, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            results.Add(new TriggerMatchResult { Trigger = trigger, MatchedPortion = trigger.Text });
+                            if (stopAfterFirst)
+                                return results;
+                        }
+                        break;
                     }
-                    break;
-                }
                 case MatchMode.Regex:
-                {
-                    var regex = GetCachedRegex(trigger.Text);
-                    if (regex is null)
-                        break;
-                    Match match;
-                    try
                     {
-                        match = regex.Match(ocrText);
-                    }
-                    catch (RegexMatchTimeoutException)
-                    {
-                        break;
-                    }
+                        var regex = GetCachedRegex(trigger.Text);
+                        if (regex is null)
+                            break;
+                        Match match;
+                        try
+                        {
+                            match = regex.Match(ocrText);
+                        }
+                        catch (RegexMatchTimeoutException)
+                        {
+                            break;
+                        }
 
-                    if (match.Success)
-                    {
-                        results.Add(new TriggerMatchResult { Trigger = trigger, MatchedPortion = match.Value });
-                        if (stopAfterFirst)
-                            return results;
+                        if (match.Success)
+                        {
+                            results.Add(new TriggerMatchResult { Trigger = trigger, MatchedPortion = match.Value });
+                            if (stopAfterFirst)
+                                return results;
+                        }
+                        break;
                     }
-                    break;
-                }
                 default:
-                {
-                    var needle = Normalize(trigger.Text);
-                    if (needle.Length == 0)
+                    {
+                        var needle = Normalize(trigger.Text);
+                        if (needle.Length == 0)
+                            break;
+                        var foldedNeedle = FoldConfusables(needle);
+                        var compactNeedle = CompactAlnum(foldedNeedle);
+                        var hit =
+                            normalizedHaystack.Contains(needle, StringComparison.OrdinalIgnoreCase) ||
+                            (!string.IsNullOrWhiteSpace(foldedNeedle) && foldedHaystack.Contains(foldedNeedle, StringComparison.OrdinalIgnoreCase)) ||
+                            (!string.IsNullOrEmpty(compactNeedle) &&
+                             compactHaystack.Contains(compactNeedle, StringComparison.OrdinalIgnoreCase)) ||
+                            (trigger.OcrMode == OcrSpeedMode.Thorough && FuzzyContains(compactHaystack, compactNeedle));
+
+                        // Fast's percentage constrains every fuzzy Contains comparison.
+                        if (!hit &&
+                            trigger.OcrMode == OcrSpeedMode.Fast &&
+                            MeetsFastSimilarityThreshold(compactHaystack, compactNeedle, threshold))
+                        {
+                            hit = true;
+                        }
+
+                        if (hit)
+                        {
+                            results.Add(new TriggerMatchResult { Trigger = trigger, MatchedPortion = trigger.Text });
+                            if (stopAfterFirst)
+                                return results;
+                        }
                         break;
-                    var foldedNeedle = FoldConfusables(needle);
-                    var compactNeedle = CompactAlnum(foldedNeedle);
-                    var hit =
-                        normalizedHaystack.Contains(needle, StringComparison.OrdinalIgnoreCase) ||
-                        foldedHaystack.Contains(foldedNeedle, StringComparison.OrdinalIgnoreCase) ||
-                        (!string.IsNullOrEmpty(compactNeedle) &&
-                         compactHaystack.Contains(compactNeedle, StringComparison.OrdinalIgnoreCase)) ||
-                        FuzzyContains(compactHaystack, compactNeedle);
-
-                    // Fast similarity is only useful when it allows more edits than FuzzyContains.
-                    // At typical thresholds (e.g. 85%+), FuzzyContains already covers that band, so
-                    // skip the expensive sliding-window rescan on long OCR haystacks.
-                    if (!hit &&
-                        trigger.OcrMode == OcrSpeedMode.Fast &&
-                        NeedsBroaderFastSimilarity(compactNeedle, threshold) &&
-                        MeetsFastSimilarityThreshold(compactHaystack, compactNeedle, threshold))
-                    {
-                        hit = true;
                     }
-
-                    if (hit)
-                    {
-                        results.Add(new TriggerMatchResult { Trigger = trigger, MatchedPortion = trigger.Text });
-                        if (stopAfterFirst)
-                            return results;
-                    }
-                    break;
-                }
             }
         }
 
@@ -232,22 +230,6 @@ public static class TriggerMatcher
     }
 
     /// <summary>
-    /// True when the Fast threshold permits a larger edit distance than <see cref="FuzzyContains"/>.
-    /// </summary>
-    internal static bool NeedsBroaderFastSimilarity(string compactNeedle, int thresholdPercent)
-    {
-        if (string.IsNullOrEmpty(compactNeedle) || compactNeedle.Length < 6)
-            return false;
-
-        var threshold = Math.Clamp(thresholdPercent, 50, 100);
-        // Edits allowed by threshold: score = 100*(1-dist/len) >= threshold
-        // => dist <= len * (1 - threshold/100)
-        var maxDistForThreshold = (int)Math.Floor(compactNeedle.Length * (1.0 - threshold / 100.0));
-        var fuzzyMax = compactNeedle.Length >= 8 ? 2 : 1;
-        return maxDistForThreshold > fuzzyMax;
-    }
-
-    /// <summary>
     /// Best window score: 100 * (1 - Levenshtein / max(window, needle length)).
     /// </summary>
     public static int BestCompactSimilarityPercent(string compactHaystack, string compactNeedle)
@@ -327,8 +309,8 @@ public static class TriggerMatcher
             var usefulDistCap = maxDistance;
             if (best > 0)
             {
-                var distForBest = (int)Math.Floor(denom * (1.0 - best / 100.0));
-                usefulDistCap = Math.Min(usefulDistCap, Math.Max(0, distForBest - 1));
+                var distForBest = (int)Math.Ceiling(denom * (1.0 - best / 100.0));
+                usefulDistCap = Math.Min(usefulDistCap, Math.Max(0, distForBest));
             }
 
             for (var i = 0; i <= haystack.Length - win; i++)
@@ -352,7 +334,7 @@ public static class TriggerMatcher
                         return 100;
                     usefulDistCap = Math.Min(
                         maxDistance,
-                        Math.Max(0, (int)Math.Floor(denom * (1.0 - best / 100.0)) - 1));
+                        Math.Max(0, (int)Math.Ceiling(denom * (1.0 - best / 100.0))));
                 }
             }
         }

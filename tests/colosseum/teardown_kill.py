@@ -8,6 +8,9 @@ from support_captures import cleanup_appdata
 
 
 def main() -> None:
+    from support_captures import require_live_execution
+
+    require_live_execution()
     try:
         from colosseum_gui.connections import close_all
 

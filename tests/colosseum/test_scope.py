@@ -24,6 +24,9 @@ from support_captures import (
 
 
 def main() -> None:
+    from support_captures import require_live_execution
+
+    require_live_execution()
     if "PAY_ATTENTION_APPDATA" not in os.environ:
         make_appdata()
         os.environ["PAY_ATTENTION_APPDATA"] = str(appdata())
@@ -83,7 +86,9 @@ def main() -> None:
 
     before = snapshot_captures()
     start_monitor_process()
-    verify_capture_appeared(key="whitelist_alpha", before=before, timeout_s=20.0)
+    verify_capture_appeared(
+        key="whitelist_alpha", before=before, timeout_s=20.0, trigger_text=SCOPE_ALPHA
+    )
 
     # Only the alpha trigger may fire. Confirm no decoy-named capture appeared.
     captures = list((appdata() / "captures").glob("*"))

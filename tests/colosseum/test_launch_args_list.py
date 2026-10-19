@@ -12,7 +12,6 @@ from __future__ import annotations
 import os
 
 import colosseum as col
-from colosseum_gui.connections import close_all, get_desktop
 
 from support_captures import (
     _toml_path,
@@ -32,6 +31,11 @@ def _toml_string(value: str) -> str:
 
 
 def main() -> None:
+    from support_captures import require_live_execution
+
+    require_live_execution()
+    from colosseum_gui.connections import close_all, get_desktop
+
     if "PAY_ATTENTION_APPDATA" not in os.environ:
         make_appdata()
         os.environ["PAY_ATTENTION_APPDATA"] = str(appdata())

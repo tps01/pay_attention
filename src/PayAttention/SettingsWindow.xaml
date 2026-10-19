@@ -237,7 +237,7 @@
 
                 <TextBlock Grid.Row="3" Grid.Column="0" Text="Debounce (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
                            ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed. Per-application debounce overrides this when that app is foreground." />
-                <TextBox x:Name="DebounceBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                <TextBox x:Name="DebounceBox" AutomationProperties.AutomationId="DebounceBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
                          ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed. Per-application debounce overrides this when that app is foreground." />
 
                 <TextBlock Grid.Row="4" Grid.Column="0" Text="Application scope" VerticalAlignment="Center" Margin="0,0,0,8"
@@ -516,9 +516,9 @@
                 <TextBox x:Name="OcrTerminalMaxRegionsBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
                          ToolTip="How many terminal-like crops to OCR (0–4)." />
 
-                <TextBlock Grid.Row="4" Grid.Column="0" Text="Max windows (All−blacklist)" VerticalAlignment="Center" Margin="0,0,0,8"
+                <TextBlock Visibility="Collapsed" Grid.Row="4" Grid.Column="0" Text="Max windows (All−blacklist)" VerticalAlignment="Center" Margin="0,0,0,8"
                            ToolTip="Max windows OCR'd per frame in All Minus Blacklisted mode (1–12)." />
-                <TextBox x:Name="OcrMaxWindowsBox" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                <TextBox Visibility="Collapsed" x:Name="OcrMaxWindowsBox" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
                          ToolTip="Max windows OCR'd per frame in All Minus Blacklisted mode (1–12)." />
 
                 <TextBlock Grid.Row="5" Grid.Column="0" Text="OCR queue capacity" VerticalAlignment="Center" Margin="0,0,0,8"

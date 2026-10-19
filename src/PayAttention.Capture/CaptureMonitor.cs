@@ -21,7 +21,7 @@ public sealed class TriggerFiredEventArgs : EventArgs
 
 public sealed class CaptureMonitor : IDisposable
 {
-    private readonly OcrService _ocr = new();
+    private readonly CaptureServices _services;
     private readonly TriggerFireGate _fireGate = new();
     private readonly FrameRingBuffer _ringBuffer;
     private readonly FrameRingBuffer _sequenceRing;
@@ -34,8 +34,10 @@ public sealed class CaptureMonitor : IDisposable
     private static readonly TimeSpan EnqueueSkipLogInterval = TimeSpan.FromSeconds(30);
 
     private readonly object _lifecycleLock = new();
-    private bool _restartAfterStop;
-    private bool _restartPaused;
+    private Task _stopTask = Task.CompletedTask;
+    private readonly HashSet<Task> _writes = new();
+    private const int MaxPendingWrites = 4;
+    private long _captureEpoch;
     private int _stopEpoch;
 
     private AppConfig _config;
@@ -43,36 +45,31 @@ public sealed class CaptureMonitor : IDisposable
     private Task? _loopTask;
     private OcrFrameQueue? _ocrQueue;
     private long _lastProfileFlushTimestamp = Stopwatch.GetTimestamp();
-    private bool _paused;
+    private volatile bool _paused;
     private bool _disposed;
-    /// <summary>Force a full Grab after AllowResample or FG change.</summary>
-    private bool _forceFullGrab = true;
-    /// <summary>Last capture cycle skipped enqueue (scene unchanged).</summary>
-    private bool _lastEnqueueSkipped;
-    private string? _lastCaptureForeground;
-    private int _skippedGrabCount;
-    /// <summary>Still probe the screen at least every N skipped intervals when quiet.</summary>
-    private const int MaxSkippedGrabs = 4;
     /// <summary>Last whitelist process that held OS focus (survives focus-lock steals).</summary>
     private string? _stickyWhitelistForeground;
     private DateTimeOffset _lastEnqueueSkipLogUtc = DateTimeOffset.MinValue;
     private int _enqueueSkipStreak;
 
-    public CaptureMonitor(AppConfig config, AppLogger logger)
+    public CaptureMonitor(AppConfig config, AppLogger logger) : this(config, logger, CaptureServices.Create()) { }
+
+    internal CaptureMonitor(AppConfig config, AppLogger logger, CaptureServices services)
     {
+        _services = services;
         _config = CloneConfig(config);
         _logger = logger;
         _ringBuffer = new FrameRingBuffer(
             TimeSpan.FromSeconds(_config.RecordBufferSeconds),
             _config.RecordFps);
         _sequenceRing = new FrameRingBuffer(
-            TimeSpan.FromSeconds(_config.SequenceBeforeSeconds),
-            TimeSpan.FromSeconds(_config.SequenceIntervalSeconds));
+            SequenceHistory(_config),
+            TimeSpan.FromSeconds(1));
     }
 
-    public bool IsRunning => _loopTask is { IsCompleted: false };
+    public bool IsRunning => _cts is not null;
     public bool IsPaused => _paused;
-    public bool OcrAvailable => _ocr.IsAvailable;
+    public bool OcrAvailable => _services.OcrAvailable;
 
     public event EventHandler<MonitorStatusEventArgs>? StatusChanged;
     public event EventHandler<TriggerFiredEventArgs>? TriggerFired;
@@ -87,8 +84,8 @@ public sealed class CaptureMonitor : IDisposable
                 TimeSpan.FromSeconds(_config.RecordBufferSeconds),
                 _config.RecordFps);
             _sequenceRing.Configure(
-                TimeSpan.FromSeconds(_config.SequenceBeforeSeconds),
-                TimeSpan.FromSeconds(_config.SequenceIntervalSeconds));
+                SequenceHistory(_config),
+                TimeSpan.FromSeconds(1));
 
             if (!_config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Record))
                 _ringBuffer.Clear();
@@ -104,12 +101,12 @@ public sealed class CaptureMonitor : IDisposable
             if (_disposed)
                 return;
             // Still inside a cancelled OCR pass: do not open a second pipeline.
-            if (_loopTask is { IsCompleted: false })
+            if (_cts is not null || !_stopTask.IsCompleted)
                 return;
             if (_loopTask is not null || _cts is not null || _ocrQueue is not null)
                 ReleasePipeline();
 
-            if (!_ocr.IsAvailable)
+            if (!_services.OcrAvailable)
             {
                 RaiseStatus("Error", "Windows OCR is unavailable on this system.");
                 _logger.Error("Windows OCR engine could not be created.");
@@ -117,12 +114,9 @@ public sealed class CaptureMonitor : IDisposable
             }
 
             _paused = false;
+            _captureEpoch++;
             _stickyWhitelistForeground = null;
             _lastProfileFlushTimestamp = Stopwatch.GetTimestamp();
-            _forceFullGrab = true;
-            _lastEnqueueSkipped = false;
-            _lastCaptureForeground = null;
-            _skippedGrabCount = 0;
             _enqueueSkipStreak = 0;
             _lastEnqueueSkipLogUtc = DateTimeOffset.MinValue;
             _cts = new CancellationTokenSource();
@@ -166,119 +160,79 @@ public sealed class CaptureMonitor : IDisposable
 
     /// <summary>
     /// Stop then Start so queue capacity and worker priority pick up the latest config.
-    /// No-op when monitoring is not running. If OCR does not exit within the stop wait,
-    /// the new session starts when that pass finishes.
+    /// No-op when monitoring is not running. Await the old pipeline and writers before restarting.
     /// </summary>
-    public void RestartIfRunning()
+    public void RestartIfRunning() => RestartIfRunningAsync().GetAwaiter().GetResult();
+
+    public async Task RestartIfRunningAsync()
     {
-        lock (_lifecycleLock)
-        {
-            if (_disposed || _loopTask is not { IsCompleted: false })
-                return;
-            _restartAfterStop = true;
-            _restartPaused = _paused;
-        }
-
-        StopCore();
-    }
-
-    public void Stop()
-    {
-        lock (_lifecycleLock)
-        {
-            _restartAfterStop = false;
-            _stopEpoch++;
-        }
-
-        StopCore();
-    }
-
-    private void StopCore()
-    {
-        Task? loop;
-        lock (_lifecycleLock)
-        {
-            if (_cts is null && _loopTask is null)
-                return;
-
-            _cts?.Cancel();
-            _ocrQueue?.Complete();
-            loop = _loopTask;
-        }
-
-        var finished = false;
-        try
-        {
-            // Thorough OCR can outlast a short wait. Do not drop the task and start another.
-            finished = loop is null || loop.Wait(TimeSpan.FromSeconds(60));
-        }
-        catch (AggregateException)
-        {
-            finished = loop is null || loop.IsCompleted;
-        }
-
-        if (!finished)
-        {
-            _logger.Warn(
-                "Monitoring did not exit within 60s after cancel. Another session waits until OCR finishes.");
-            RaiseStatus("Stopping", "Waiting for the current OCR pass to finish.");
-            loop!.ContinueWith(
-                _ => FinishStop(),
-                CancellationToken.None,
-                TaskContinuationOptions.None,
-                TaskScheduler.Default);
-            return;
-        }
-
-        FinishStop();
-    }
-
-    private void FinishStop()
-    {
-        bool restart;
         bool paused;
-        var stopped = false;
         int epoch;
         lock (_lifecycleLock)
         {
-            if (_loopTask is { IsCompleted: false })
+            if (_disposed || !IsRunning)
                 return;
-
-            if (_cts is not null || _ocrQueue is not null || _loopTask is not null)
-            {
-                ReleasePipeline();
-                stopped = true;
-            }
-
-            restart = _restartAfterStop && !_disposed;
-            paused = _restartPaused;
+            paused = _paused;
             epoch = _stopEpoch;
-            _restartAfterStop = false;
         }
-
-        if (stopped)
-        {
-            FlushProfile("stop");
-            RaiseStatus("Stopped", "Monitoring stopped.");
-            _logger.Info("Monitoring stopped.");
-        }
-
-        if (!restart)
-            return;
-
+        await StopCoreAsync().ConfigureAwait(false);
         lock (_lifecycleLock)
         {
-            // A later Stop (or exit) wins over a deferred settings restart.
-            if (epoch != _stopEpoch || _disposed)
+            if (_disposed || epoch != _stopEpoch)
                 return;
+            Start();
+            if (paused)
+                SetPaused(true);
         }
-
-        Start();
-        if (paused)
-            SetPaused(true);
     }
 
-    /// <summary>Caller holds <see cref="_lifecycleLock"/>.</summary>
+    public void Stop() => StopAsync().GetAwaiter().GetResult();
+
+    public Task StopAsync()
+    {
+        lock (_lifecycleLock)
+        {
+            _stopEpoch++;
+            return StopCoreAsync();
+        }
+    }
+
+    private Task StopCoreAsync()
+    {
+        lock (_lifecycleLock)
+        {
+            if (!_stopTask.IsCompleted)
+                return _stopTask;
+            if (_cts is null)
+                return Task.CompletedTask;
+            _captureEpoch++;
+            _cts.Cancel();
+            _ocrQueue?.Complete();
+            RaiseStatus("Stopping", "Finishing capture work.");
+            _stopTask = FinishStopAsync(_loopTask);
+            return _stopTask;
+        }
+    }
+
+    private async Task FinishStopAsync(Task? pipeline)
+    {
+        try
+        {
+            if (pipeline is not null)
+                await pipeline.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _logger.Error("Monitoring stopped after a pipeline error", ex); }
+        Task[] writes;
+        lock (_lifecycleLock)
+            writes = _writes.ToArray();
+        await Task.WhenAll(writes).ConfigureAwait(false);
+        lock (_lifecycleLock)
+            ReleasePipeline();
+        FlushProfile("stop");
+        RaiseStatus("Stopped", "Monitoring stopped; capture writes settled.");
+    }
+
     private void ReleasePipeline()
     {
         _ocrQueue?.Dispose();
@@ -291,12 +245,30 @@ public sealed class CaptureMonitor : IDisposable
         _fireGate.Reset();
     }
 
+    private bool IsCurrent(long epoch)
+    {
+        lock (_lifecycleLock)
+            return !_paused && _cts is { IsCancellationRequested: false } && epoch == _captureEpoch;
+    }
+
     public void SetPaused(bool paused)
     {
-        _paused = paused;
+        lock (_lifecycleLock)
+        {
+            if (!IsRunning || _paused == paused)
+                return;
+            _paused = paused;
+            _captureEpoch++;
+            _ocrQueue?.ClearPending();
+            _ringBuffer.Clear();
+            _sequenceRing.Clear();
+            _fireGate.Reset();
+        }
         RaiseStatus(paused ? "Paused" : "Monitoring", paused ? "Monitoring paused." : "Monitoring resumed.");
-        _logger.Info(paused ? "Monitoring paused." : "Monitoring resumed.");
     }
+
+    private static TimeSpan SequenceHistory(AppConfig config) =>
+        TimeSpan.FromSeconds(config.SequenceBeforeSeconds + config.SequenceAfterSeconds + 60);
 
     public void TogglePause() => SetPaused(!_paused);
 
@@ -321,146 +293,80 @@ public sealed class CaptureMonitor : IDisposable
     /// </summary>
     private async Task RunCaptureLoopAsync(CancellationToken token)
     {
-        var retentionCounter = 0;
         var queue = _ocrQueue ?? throw new InvalidOperationException("OCR queue not initialized.");
-
+        var lastOcrSample = DateTimeOffset.MinValue;
         while (!token.IsCancellationRequested)
         {
             AppConfig config;
-            lock (_configLock)
-                config = _config;
-
-            var interval = TimeSpan.FromMilliseconds(Math.Max(1, config.OcrIntervalMs));
+            lock (_configLock) config = _config;
+            var record = config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Record);
+            var sequence = config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Sequence);
+            var interval = TimeSpan.FromMilliseconds(record
+                ? Math.Min(config.OcrIntervalMs, 1000.0 / Math.Max(1, config.RecordFps))
+                : config.OcrIntervalMs);
             var cycle = Stopwatch.StartNew();
-
             try
             {
-                if (_paused)
+                if (!_paused)
                 {
-                    await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
-                    continue;
-                }
-
-                var foregroundProcess = ScreenGrabber.GetForegroundProcessName();
-
-                // Whitelist-only: tell the skip gate which listed processes are alive (cheap
-                // GetProcessesByName). All / AllMinusBlacklisted ignore this snapshot.
-                // Selected follows the real FG when it is listed; otherwise sticky last listed
-                // FG or top-most listed Z-order (focus-lock often steals OS FG elsewhere).
-                IEnumerable<string>? runningWhitelist = null;
-                if (config.ApplicationScope == ApplicationScopeMode.Whitelisted)
-                {
-                    var whitelist = ApplicationScopeEvaluator.GetWhitelistProcessNames(config);
-                    runningWhitelist = whitelist.Count > 0 && ScreenGrabber.AnyNamedProcessRunning(whitelist)
-                        ? whitelist
-                        : Array.Empty<string>();
-                    if (whitelist.Count > 0)
-                        foregroundProcess = ResolveWhitelistForeground(whitelist, foregroundProcess);
-                }
-
-                if (ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, foregroundProcess, runningWhitelist))
-                {
-                    LogScopeSkip(config, foregroundProcess, runningWhitelist);
-                    await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
-                    continue;
-                }
-
-                var nowUtc = DateTimeOffset.UtcNow;
-                var needsRecordRing = config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Record);
-                var needsSequenceRing = config.Triggers.Any(t => t.Enabled && t.Action == CaptureAction.Sequence);
-                var ringsNeedFrame =
-                    (needsRecordRing && _ringBuffer.WouldAccept(nowUtc)) ||
-                    (needsSequenceRing && _sequenceRing.WouldAccept(nowUtc));
-                var fgNorm = ApplicationScopeEvaluator.NormalizeProcessName(foregroundProcess);
-                var fgChanged = !string.Equals(_lastCaptureForeground, fgNorm, StringComparison.OrdinalIgnoreCase);
-                // Quiet desktop: skip full Grab while the last scene was unchanged, unless
-                // rings need a sample, resample was requested, FG changed, or we hit the probe cap.
-                if (!_forceFullGrab &&
-                    !ringsNeedFrame &&
-                    !fgChanged &&
-                    _lastEnqueueSkipped &&
-                    _skippedGrabCount < MaxSkippedGrabs)
-                {
-                    _skippedGrabCount++;
-                    MaybeFlushProfile(config);
-                    await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
-                    continue;
-                }
-
-                _forceFullGrab = false;
-                _skippedGrabCount = 0;
-                _lastCaptureForeground = fgNorm;
-
-                var grabStart = Stopwatch.GetTimestamp();
-                using var frame = Grab(config);
-                _profiler.Record("grab", grabStart, _logger);
-                if (frame is null)
-                {
-                    MaybeFlushProfile(config);
-                    _logger.Debug($"Grab returned null (scope={config.CaptureScope}, FG={foregroundProcess ?? "(none)"}).");
-                    await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
-                    continue;
-                }
-
-                var maskNames = ApplicationScopeEvaluator.GetBlacklistProcessNamesToMask(config);
-                if (maskNames.Count > 0)
-                {
-                    var maskStart = Stopwatch.GetTimestamp();
-                    var masked = ScreenGrabber.MaskProcessWindows(frame.Bitmap, frame.ScreenBounds, maskNames);
-                    _profiler.Record("mask", maskStart, _logger);
-                    if (masked == 0)
-                        _logger.Warn(
-                            $"Blacklist mask: no window overlap with capture bounds ({frame.ScreenBounds.Width}x{frame.ScreenBounds.Height} @({frame.ScreenBounds.X},{frame.ScreenBounds.Y})) for: {string.Join(", ", maskNames)}");
-                }
-
-                if (needsRecordRing || needsSequenceRing)
-                {
-                    var ringStart = Stopwatch.GetTimestamp();
-                    if (needsRecordRing)
-                        _ringBuffer.TryAdd(frame.Bitmap, frame.Timestamp, config.RecordJpegQuality);
-                    if (needsSequenceRing)
-                        _sequenceRing.TryAdd(frame.Bitmap, frame.Timestamp, config.RecordJpegQuality);
-                    _profiler.Record("ring", ringStart, _logger);
-                }
-
-                var fingerprint = FrameFingerprint.ComputeAverageHash(frame.Bitmap);
-                var hamming = queue.HammingVsLastEnqueued(fingerprint);
-                var enqueued = queue.TryEnqueueIfChanged(
-                    frame, foregroundProcess, fingerprint, out var enqueueDecision, _profiler, _logger);
-                _lastEnqueueSkipped = !enqueued;
-                LogEnqueueDecision(enqueueDecision, enqueued, fingerprint, hamming, foregroundProcess);
-
-                retentionCounter++;
-                if (retentionCounter % 60 == 0)
-                {
-                    var dir = config.CaptureDirectory;
-                    var age = config.RetentionMaxAgeDays;
-                    var maxFiles = config.RetentionMaxFiles;
-                    _ = Task.Run(() =>
+                    long epoch;
+                    lock (_lifecycleLock) epoch = _captureEpoch;
+                    var foregroundProcess = _services.ForegroundProcess();
+                    IEnumerable<string>? runningWhitelist = null;
+                    if (config.ApplicationScope == ApplicationScopeMode.Whitelisted)
                     {
-                        RetentionService.Enforce(dir, age, maxFiles, _logger);
-                        _logger.EnforceRetention();
-                    }, token);
+                        var whitelist = ApplicationScopeEvaluator.GetWhitelistProcessNames(config);
+                        runningWhitelist = whitelist.Count > 0 && ScreenGrabber.AnyNamedProcessRunning(whitelist)
+                            ? whitelist : Array.Empty<string>();
+                        if (whitelist.Count > 0)
+                            foregroundProcess = ResolveWhitelistForeground(whitelist, foregroundProcess);
+                    }
+                    if (!ApplicationScopeEvaluator.ShouldSkipOcrCycle(config, foregroundProcess, runningWhitelist))
+                    {
+                        var start = Stopwatch.GetTimestamp();
+                        using var frame = _services.Grab(config);
+                        _profiler.Record("grab", start, _logger);
+                        if (frame is not null && IsCurrent(epoch))
+                        {
+                            frame.Epoch = epoch;
+                            var masks = ApplicationScopeEvaluator.GetBlacklistProcessNamesToMask(config);
+                            if (masks.Count > 0)
+                                _services.Mask(frame, masks);
+                            // All evidence, including sequence continuation, comes through this policy path.
+                            lock (_lifecycleLock)
+                            {
+                                if (IsCurrent(epoch))
+                                {
+                                    if (record) _ringBuffer.TryAdd(frame.Bitmap, frame.Timestamp, config.RecordJpegQuality);
+                                    if (sequence) _sequenceRing.TryAdd(frame.Bitmap, frame.Timestamp, config.RecordJpegQuality);
+                                    if (frame.Timestamp - lastOcrSample >= TimeSpan.FromMilliseconds(config.OcrIntervalMs))
+                                    {
+                                        lastOcrSample = frame.Timestamp;
+                                        frame.RecordFrames = record ? _ringBuffer.SnapshotAt(frame.Timestamp, TimeSpan.FromSeconds(config.RecordBufferSeconds)) : null;
+                                        frame.SequenceFrames = sequence ? _sequenceRing.SnapshotAt(frame.Timestamp, TimeSpan.FromSeconds(config.SequenceBeforeSeconds)) : null;
+                                        var hashStart = Stopwatch.GetTimestamp();
+                                        var fingerprint = FrameFingerprint.ComputeContentHash(frame.Bitmap);
+                                        _profiler.Record("enqueue.hash", hashStart, _logger);
+                                        var hamming = queue.HammingVsLastEnqueued(fingerprint);
+                                        var enqueued = queue.TryEnqueueIfChanged(frame, foregroundProcess, fingerprint, out var decision, _profiler, _logger);
+                                        LogEnqueueDecision(decision, enqueued, fingerprint, hamming, foregroundProcess);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else LogScopeSkip(config, foregroundProcess, runningWhitelist);
                 }
+                MaybeFlushProfile(config);
+                await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
-            {
-                break;
-            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
                 _logger.Error("Capture loop iteration failed", ex);
                 RaiseStatus("Warning", ex.Message);
-            }
-
-            try
-            {
-                MaybeFlushProfile(config);
-                await DelayCapturePeriodAsync(interval, cycle, token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
-            {
-                break;
+                try { await Task.Delay(interval, token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
             }
         }
     }
@@ -485,10 +391,10 @@ public sealed class CaptureMonitor : IDisposable
                 lock (_configLock)
                     config = _config;
 
+                if (!IsCurrent(queued.Epoch))
+                    continue;
                 var captured = queued.ToCapturedFrame();
-                // Freeze rings at dequeue so long OCR cannot roll past the prompting scene.
-                var recordFramesAtDequeue = _ringBuffer.Snapshot();
-                var sequenceFramesAtDequeue = _sequenceRing.Snapshot();
+                var claims = new Dictionary<Guid, Guid>();
 
                 var foregroundProcess = queued.ForegroundProcess;
                 var published = new HashSet<Guid>();
@@ -498,6 +404,8 @@ public sealed class CaptureMonitor : IDisposable
                     IReadOnlyList<TriggerMatchResult> matches,
                     bool logMatchSummary)
                 {
+                    if (!IsCurrent(queued.Epoch))
+                        return;
                     var found = matches
                         .Where(m => ApplicationScopeEvaluator.IsTriggerAllowed(config, foregroundProcess, m.Trigger.Id))
                         .ToList();
@@ -512,8 +420,9 @@ public sealed class CaptureMonitor : IDisposable
 
                         // Id only: regex MatchedPortion changes with each OCR hit and would skip debounce.
                         var key = match.Trigger.Id.ToString("N");
-                        if (_fireGate.ShouldFire(key, debounce, queued.Fingerprint, out var suppressReason))
+                        if (_fireGate.TryClaim(key, debounce, queued.Fingerprint, out var claim, out var suppressReason))
                         {
+                            claims[match.Trigger.Id] = claim;
                             _logger.Debug(
                                 $"Trigger '{match.Trigger.Text}' accepted (matched '{match.MatchedPortion}', " +
                                 $"fp=0x{queued.Fingerprint:X16}).");
@@ -533,8 +442,7 @@ public sealed class CaptureMonitor : IDisposable
                             captured,
                             match,
                             ocrText,
-                            recordFramesAtDequeue,
-                            sequenceFramesAtDequeue);
+                            claims[match.Trigger.Id]);
                     }
                 }
 
@@ -600,7 +508,6 @@ public sealed class CaptureMonitor : IDisposable
                 if (shouldResample)
                 {
                     queue.AllowResample();
-                    _forceFullGrab = true;
                     _logger.Debug(
                         $"Resample: allow immediately (allMatched={allMatched}, anyForQuiet={anyForQuiet}, " +
                         $"cutShort={ocr.CutShortForBacklog}, pending={pending}).");
@@ -784,7 +691,7 @@ public sealed class CaptureMonitor : IDisposable
         return osForeground;
     }
 
-    private static CapturedFrame? Grab(AppConfig config)
+    internal static CapturedFrame? Grab(AppConfig config, Func<CapturedFrame?>? foregroundCapture = null)
     {
         var whitelistNames = ApplicationScopeEvaluator.GetWhitelistProcessNames(config);
         if (whitelistNames.Count > 0)
@@ -792,9 +699,7 @@ public sealed class CaptureMonitor : IDisposable
 
         if (config.CaptureScope == CaptureScope.ForegroundWindow)
         {
-            var foreground = ScreenGrabber.TryCaptureForegroundWindow();
-            if (foreground is not null)
-                return foreground;
+            return (foregroundCapture ?? ScreenGrabber.TryCaptureForegroundWindow)();
         }
 
         return config.MonitorSelection switch
@@ -822,6 +727,20 @@ public sealed class CaptureMonitor : IDisposable
     private static string JoinChunks(List<string> chunks) =>
         string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
 
+    // Offline evidence verification follows the same frozen-image OCR cascade as monitoring.
+    internal async Task<bool> VerifySavedImageAsync(Bitmap bitmap, TriggerConfig trigger)
+    {
+        var config = new AppConfig { Triggers = [trigger], ApplicationScope = ApplicationScopeMode.All };
+        using var frame = new CapturedFrame
+        {
+            Bitmap = (Bitmap)bitmap.Clone(),
+            Timestamp = DateTimeOffset.UtcNow,
+            ScreenBounds = new Rectangle(0, 0, bitmap.Width, bitmap.Height)
+        };
+        var result = await RecognizeFrameAsync(config, frame, CancellationToken.None).ConfigureAwait(false);
+        return result.MatchedIds.Contains(trigger.Id);
+    }
+
     private async Task<OcrFrameResult> RecognizeFrameAsync(
         AppConfig config,
         CapturedFrame frame,
@@ -836,17 +755,6 @@ public sealed class CaptureMonitor : IDisposable
         var cascade = new CascadeContext(
             config, cascadeClock, pendingBehind, _profiler, _logger,
             processName: processName, fingerprint: fingerprint);
-
-        // AllMinusBlacklisted: OCR each non-masked visible window crop so side-by-side
-        // panes (e.g. Alpha + Beta) are recoverable; keep the full masked frame for save.
-        if (config.ApplicationScope == ApplicationScopeMode.AllMinusBlacklisted &&
-            config.CaptureScope == CaptureScope.Monitor)
-        {
-            var windowResult = await RecognizeNonBlacklistedWindowsAsync(
-                config, frame, cascade, onText, token).ConfigureAwait(false);
-            if (windowResult is not null)
-                return windowResult.Value;
-        }
 
         if (config.CaptureScope == CaptureScope.Monitor &&
             config.MonitorSelection == MonitorSelection.All)
@@ -891,96 +799,6 @@ public sealed class CaptureMonitor : IDisposable
         }
 
         return await RecognizeBitmapMultiPassAsync(frame.Bitmap, cascade, token, onText).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Per-window OCR for AllMinusBlacklisted monitor captures. Returns null when no
-    /// overlapping non-blacklisted windows were found (caller falls back to full-frame OCR).
-    /// </summary>
-    private async Task<OcrFrameResult?> RecognizeNonBlacklistedWindowsAsync(
-        AppConfig config,
-        CapturedFrame frame,
-        CascadeContext sharedCascade,
-        Action<string, IReadOnlyList<TriggerMatchResult>>? onText,
-        CancellationToken token)
-    {
-        var exclude = ApplicationScopeEvaluator.GetBlacklistProcessNamesToMask(config);
-        var windows = ScreenGrabber.GetVisibleProcessWindows(exclude);
-        if (windows.Count == 0)
-            return null;
-
-        var maxWindows = Math.Clamp(config.OcrMaxWindows, 1, 12);
-        var frameArea = frame.ScreenBounds.Width * (long)frame.ScreenBounds.Height;
-        // Preserve EnumWindows Z-order (top → bottom). TopMost fixture panes sort above
-        // ordinary browser windows; do not re-rank by area (that OCR'd huge Chrome first).
-        var targets = new List<(IntPtr Hwnd, Rectangle Bounds)>();
-        foreach (var (hwnd, windowBounds) in windows)
-        {
-            var overlap = Rectangle.Intersect(windowBounds, frame.ScreenBounds);
-            if (overlap.Width < 32 || overlap.Height < 32)
-                continue;
-            var area = overlap.Width * (long)overlap.Height;
-            // Skip near-fullscreen hosts and tiny tool windows.
-            if (frameArea > 0 && (area >= frameArea * 3 / 4 || area < frameArea / 200))
-                continue;
-            targets.Add((hwnd, overlap));
-            if (targets.Count >= maxWindows)
-                break;
-        }
-
-        if (targets.Count == 0)
-            return null;
-
-        var parts = new List<string>(targets.Count);
-        var cutShort = false;
-        // One cascade clock for the whole frame — later windows inherit elapsed time.
-        for (var i = 0; i < targets.Count; i++)
-        {
-            if (sharedCascade.Match.AllInScopeMatched())
-                break;
-            if (IsCascadeOverBudget(sharedCascade))
-            {
-                cutShort = true;
-                break;
-            }
-
-            // PrintWindow each HWND for OCR: CopyFromScreen crops often miss TextBox
-            // scroll paints that PrintWindow still recovers (same as whitelist path).
-            // Screenshot save stays the masked monitor frame from the queue.
-            using var live = ScreenGrabber.TryCaptureWindow(targets[i].Hwnd);
-            using var cropped = live is null
-                ? ImageHelpers.CropAbsoluteRegion(
-                    frame.Bitmap, frame.ScreenBounds, targets[i].Bounds)
-                : null;
-            var slice = live?.Bitmap ?? cropped;
-            if (slice is null)
-                continue;
-
-            // Per-window prep overrides (e.g. neon Auto on a terminal HWND).
-            var windowProcess = ScreenGrabber.GetProcessNameForWindow(targets[i].Hwnd)
-                                ?? sharedCascade.ProcessName;
-            var windowCascade = new CascadeContext(
-                config,
-                sharedCascade.Clock,
-                () => sharedCascade.PendingBehind,
-                _profiler,
-                _logger,
-                sharedCascade.Match,
-                windowProcess,
-                sharedCascade.Fingerprint);
-
-            var part = await RecognizeBitmapMultiPassAsync(slice, windowCascade, token, onText)
-                .ConfigureAwait(false);
-            parts.Add(part.Text);
-            cutShort |= part.CutShortForBacklog;
-
-            if (sharedCascade.Match.AllInScopeMatched())
-                return ToFrameResult(string.Join("\n", parts), cutShort: false, sharedCascade.Match);
-        }
-
-        return parts.Count == 0
-            ? null
-            : ToFrameResult(string.Join("\n", parts), cutShort, sharedCascade.Match);
     }
 
     private async Task<OcrFrameResult> RecognizeBitmapMultiPassAsync(
@@ -1385,7 +1203,7 @@ public sealed class CaptureMonitor : IDisposable
             _profiler.Record("ocr.prep", prepStart, _logger);
 
             var recognizeStart = Stopwatch.GetTimestamp();
-            var text = await _ocr.RecognizeAsync(prepared, token).ConfigureAwait(false);
+            var text = await _services.Recognize(prepared, token).ConfigureAwait(false);
             _profiler.Record("ocr.recognize", recognizeStart, _logger);
 
             if (!string.IsNullOrWhiteSpace(text))
@@ -1401,168 +1219,127 @@ public sealed class CaptureMonitor : IDisposable
     /// <summary>
     /// Persist captures from the original color frame. OCR preprocessing never feeds this path.
     /// </summary>
-    private void QueueCaptureWrite(
-        AppConfig config,
-        CapturedFrame frame,
-        TriggerMatchResult match,
-        string ocrText,
-        IReadOnlyList<BufferedFrame>? recordFramesAtDequeue = null,
-        IReadOnlyList<BufferedFrame>? sequenceFramesAtDequeue = null)
+    private void QueueCaptureWrite(AppConfig config, CapturedFrame frame, TriggerMatchResult match, string ocrText, Guid claim)
     {
-        var triggerText = match.Trigger.Text;
-        // StatusChanged logs this at Info and App shows an early tray balloon.
-        RaiseStatus("Processing", $"Potential trigger observed, processing... ('{triggerText}')");
-
-        var snippet = ocrText.Length <= 280 ? ocrText : ocrText[..280];
-        var sidecar = new CaptureSidecar
+        var key = match.Trigger.Id.ToString("N");
+        lock (_lifecycleLock)
         {
-            Timestamp = frame.Timestamp,
-            MatchedText = match.MatchedPortion,
-            TriggerText = match.Trigger.Text,
-            MatchMode = match.Trigger.Match,
-            Action = match.Trigger.Action,
-            MonitorIndex = frame.MonitorIndex,
-            MonitorName = frame.MonitorName,
-            OcrSnippet = snippet
-        };
-
-        var clone = (Bitmap)frame.Bitmap.Clone();
-        var action = match.Trigger.Action;
-        var captureDirectory = config.CaptureDirectory;
-        var saveJson = config.DebugSaveJsonSidecars;
-        var screenshotFormat = config.ScreenshotFormat;
-        var jpegQuality = config.RecordJpegQuality;
-        var recordFps = config.RecordFps;
-        var recordFormat = config.RecordFormat;
-        var sequenceAfterSeconds = config.SequenceAfterSeconds;
-        var sequenceIntervalSeconds = config.SequenceIntervalSeconds;
-        var triggerTime = frame.Timestamp;
-        // Prefer rings frozen at OCR dequeue so a long cascade cannot roll past the scene.
-        IReadOnlyList<BufferedFrame>? recordFrames = action == CaptureAction.Record
-            ? recordFramesAtDequeue ?? _ringBuffer.Snapshot()
-            : null;
-        IReadOnlyList<BufferedFrame>? sequenceFrames = action == CaptureAction.Sequence
-            ? sequenceFramesAtDequeue ?? _sequenceRing.Snapshot()
-            : null;
-
-        RaiseStatus("Saving", $"Saving '{triggerText}'...");
-
-        var cancelToken = _cts?.Token ?? CancellationToken.None;
-
-        _ = Task.Run(() =>
-        {
-            try
+            if (!IsCurrent(frame.Epoch) || _writes.Count >= MaxPendingWrites)
             {
-                string path;
-                if (action == CaptureAction.Record)
+                _fireGate.Abandon(key, claim);
+                _ocrQueue?.ScheduleResample(TimeSpan.FromSeconds(1));
+                return;
+            }
+            var clone = (Bitmap)frame.Bitmap.Clone();
+            var token = _cts!.Token;
+            var sidecar = new CaptureSidecar
+            {
+                Timestamp = frame.Timestamp,
+                TriggerId = match.Trigger.Id,
+                MatchedText = match.MatchedPortion,
+                TriggerText = match.Trigger.Text,
+                MatchMode = match.Trigger.Match,
+                Action = match.Trigger.Action,
+                MonitorIndex = frame.MonitorIndex,
+                MonitorName = frame.MonitorName,
+                OcrSnippet = ocrText.Length <= 280 ? ocrText : ocrText[..280]
+            };
+            RaiseStatus("Processing", $"Potential trigger observed, processing... ('{match.Trigger.Text}')");
+            // Never cancel scheduling: the delegate owns disposal of the cloned bitmap.
+            var write = Task.Run(async () =>
+            {
+                string? sequenceFolder = null;
+                var complete = false;
+                try
                 {
-                    var writeStart = Stopwatch.GetTimestamp();
-                    if (recordFrames is null || recordFrames.Count == 0)
+                    if (!IsCurrent(frame.Epoch)) return;
+                    RaiseStatus("Saving", $"Saving '{match.Trigger.Text}'...");
+                    string path;
+                    if (match.Trigger.Action == CaptureAction.Record)
                     {
-                        sidecar.Action = CaptureAction.Screenshot;
-                        path = CaptureWriter.WriteScreenshot(
-                            clone, sidecar, captureDirectory, screenshotFormat, jpegQuality, saveJson);
-                        _profiler.Record("write", writeStart, _logger);
-                        _logger.Warn($"Record buffer empty for '{triggerText}', wrote screenshot instead.");
+                        var history = (frame.RecordFrames ?? []).Where(f => f.Timestamp <= frame.Timestamp).ToList();
+                        if (history.Count == 0 || history[^1].Timestamp != frame.Timestamp)
+                            history.Add(new BufferedFrame { Timestamp = frame.Timestamp, Width = clone.Width, Height = clone.Height, JpegBytes = ImageHelpers.EncodeJpeg(clone, config.RecordJpegQuality) });
+                        path = CaptureWriter.WriteRecording(history, clone, sidecar, config.CaptureDirectory,
+                            config.RecordFps, config.RecordFormat, config.ScreenshotFormat, config.RecordJpegQuality, config.DebugSaveJsonSidecars);
                     }
-                    else
+                    else if (match.Trigger.Action == CaptureAction.Sequence)
                     {
-                        path = CaptureWriter.WriteRecording(
-                            recordFrames,
-                            clone,
-                            sidecar,
-                            captureDirectory,
-                            recordFps,
-                            recordFormat,
-                            screenshotFormat,
-                            jpegQuality,
-                            saveJson);
-                        _profiler.Record("write", writeStart, _logger);
-                    }
-                }
-                else if (action == CaptureAction.Sequence)
-                {
-                    var writeStart = Stopwatch.GetTimestamp();
-                    path = CaptureWriter.WriteScreenshotSequence(
-                        sequenceFrames ?? Array.Empty<BufferedFrame>(),
-                        clone,
-                        sidecar,
-                        captureDirectory,
-                        screenshotFormat,
-                        jpegQuality,
-                        saveJson);
-                    _profiler.Record("write", writeStart, _logger);
-
-                    if (sequenceAfterSeconds > 0)
-                    {
-                        var deadline = triggerTime.AddSeconds(sequenceAfterSeconds);
-                        var nextAt = triggerTime.AddSeconds(sequenceIntervalSeconds);
-                        while (DateTimeOffset.UtcNow < deadline && !cancelToken.IsCancellationRequested)
+                        var pre = SelectSequenceFrames(frame.SequenceFrames ?? [], frame.Timestamp.AddSeconds(-config.SequenceBeforeSeconds), frame.Timestamp, config.SequenceIntervalSeconds);
+                        path = sequenceFolder = CaptureWriter.WriteScreenshotSequence(pre, clone, sidecar, config.CaptureDirectory,
+                            config.ScreenshotFormat, config.RecordJpegQuality, config.DebugSaveJsonSidecars);
+                        var deadline = frame.Timestamp.AddSeconds(config.SequenceAfterSeconds);
+                        var nextDue = frame.Timestamp.AddSeconds(config.SequenceIntervalSeconds);
+                        while (true)
                         {
-                            var delay = nextAt - DateTimeOffset.UtcNow;
-                            if (delay > TimeSpan.Zero)
+                            if (!IsCurrent(frame.Epoch)) return;
+                            // Append only real samples admitted by the common capture policy.
+                            var post = SelectSequenceFrames(_sequenceRing.Snapshot(), nextDue, deadline.AddTicks(1), config.SequenceIntervalSeconds);
+                            foreach (var sample in post)
                             {
-                                try
-                                {
-                                    Task.Delay(delay, cancelToken).GetAwaiter().GetResult();
-                                }
-                                catch (OperationCanceledException)
-                                {
-                                    break;
-                                }
+                                if (!IsCurrent(frame.Epoch)) return;
+                                CaptureWriter.WriteSequenceFrame(path, frame.Timestamp, sample, config.ScreenshotFormat, config.RecordJpegQuality);
+                                do { nextDue = nextDue.AddSeconds(Math.Max(1, config.SequenceIntervalSeconds)); }
+                                while (nextDue <= sample.Timestamp);
                             }
-
-                            if (cancelToken.IsCancellationRequested)
-                                break;
-
-                            var postGrabStart = Stopwatch.GetTimestamp();
-                            using var postFrame = Grab(config);
-                            _profiler.Record("grab", postGrabStart, _logger);
-                            if (postFrame is null)
-                                break;
-                            var stillStart = Stopwatch.GetTimestamp();
-                            CaptureWriter.WriteSequenceStill(
-                                path,
-                                triggerTime,
-                                postFrame.Timestamp,
-                                postFrame.Bitmap,
-                                screenshotFormat,
-                                jpegQuality);
-                            _profiler.Record("write", stillStart, _logger);
-                            nextAt = nextAt.AddSeconds(sequenceIntervalSeconds);
+                            if (DateTimeOffset.UtcNow >= deadline) break;
+                            await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(100, Math.Max(1, (deadline - DateTimeOffset.UtcNow).TotalMilliseconds))), token).ConfigureAwait(false);
                         }
                     }
+                    else
+                        path = CaptureWriter.WriteScreenshot(clone, sidecar, config.CaptureDirectory,
+                            config.ScreenshotFormat, config.RecordJpegQuality, config.DebugSaveJsonSidecars);
+                    if (sequenceFolder is not null)
+                    {
+                        CaptureWriter.CompleteSequence(sequenceFolder, complete: true);
+                        sequenceFolder = null;
+                    }
+                    complete = true;
+                    _fireGate.Complete(key, claim);
+                    _logger.Info($"Trigger '{match.Trigger.Text}' fired ({sidecar.Action}) -> {path}");
+                    RaiseStatus("Triggered", $"{match.Trigger.Text} -> {Path.GetFileName(path)}");
+                    TriggerFired?.Invoke(this, new TriggerFiredEventArgs { TriggerText = match.Trigger.Text, Action = sidecar.Action, OutputPath = path });
                 }
-                else
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+                catch (Exception ex)
                 {
-                    var writeStart = Stopwatch.GetTimestamp();
-                    path = CaptureWriter.WriteScreenshot(
-                        clone, sidecar, captureDirectory, screenshotFormat, jpegQuality, saveJson);
-                    _profiler.Record("write", writeStart, _logger);
+                    _logger.Error($"Failed to save capture for '{match.Trigger.Text}'", ex);
+                    RaiseStatus("Warning", ex.Message);
                 }
+                finally
+                {
+                    try
+                    {
+                        if (sequenceFolder is not null) CaptureWriter.CompleteSequence(sequenceFolder, complete);
+                    }
+                    catch (Exception ex) { _logger.Error("Failed to finalize sequence", ex); }
+                    if (!complete)
+                    {
+                        _fireGate.Abandon(key, claim);
+                        _ocrQueue?.ScheduleResample(TimeSpan.FromSeconds(1));
+                    }
+                    clone.Dispose();
+                }
+            });
+            _writes.Add(write);
+            _ = write.ContinueWith(done => { lock (_lifecycleLock) _writes.Remove(done); },
+                CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+    }
 
-                var displayName = action == CaptureAction.Sequence
-                    ? Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
-                    : Path.GetFileName(path);
-                _logger.Info($"Trigger '{triggerText}' fired ({sidecar.Action}) -> {path}");
-                RaiseStatus("Triggered", $"{triggerText} -> {displayName}");
-                TriggerFired?.Invoke(this, new TriggerFiredEventArgs
-                {
-                    TriggerText = triggerText,
-                    Action = sidecar.Action,
-                    OutputPath = path
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.Error($"Failed to save capture for '{triggerText}'", ex);
-                RaiseStatus("Warning", ex.Message);
-            }
-            finally
-            {
-                clone.Dispose();
-            }
-        }, cancelToken);
+    internal static IReadOnlyList<BufferedFrame> SelectSequenceFrames(IEnumerable<BufferedFrame> samples,
+        DateTimeOffset start, DateTimeOffset endExclusive, int spacingSeconds)
+    {
+        var selected = new List<BufferedFrame>();
+        var next = start;
+        foreach (var sample in samples.OrderBy(f => f.Timestamp))
+        {
+            if (sample.Timestamp < next || sample.Timestamp >= endExclusive) continue;
+            selected.Add(sample);
+            // Advance the schedule past this real sample; do not fabricate missed instants.
+            do { next = next.AddSeconds(Math.Max(1, spacingSeconds)); } while (next <= sample.Timestamp);
+        }
+        return selected;
     }
 
     private static readonly TimeSpan ProfileFlushInterval = TimeSpan.FromSeconds(30);
@@ -1608,13 +1385,28 @@ public sealed class CaptureMonitor : IDisposable
         if (_disposed)
             return;
         _disposed = true;
-        lock (_lifecycleLock)
-            _restartAfterStop = false;
         Stop();
         if (_loopTask is null || _loopTask.IsCompleted)
         {
             _ringBuffer.Dispose();
             _sequenceRing.Dispose();
         }
+    }
+}
+
+// Narrow capture/recognition seam for deterministic pipeline tests; production uses Windows services.
+internal sealed class CaptureServices
+{
+    public required Func<Bitmap, CancellationToken, Task<string>> Recognize { get; init; }
+    public bool OcrAvailable { get; init; } = true;
+    public Func<string?> ForegroundProcess { get; init; } = ScreenGrabber.GetForegroundProcessName;
+    public Func<AppConfig, CapturedFrame?> Grab { get; init; } = config => CaptureMonitor.Grab(config);
+    public Func<CapturedFrame, IReadOnlyList<string>, int> Mask { get; init; } =
+        (frame, names) => ScreenGrabber.MaskProcessWindows(frame.Bitmap, frame.ScreenBounds, names);
+
+    public static CaptureServices Create()
+    {
+        var ocr = new OcrService();
+        return new CaptureServices { OcrAvailable = ocr.IsAvailable, Recognize = ocr.RecognizeAsync };
     }
 }

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import time
 import uuid
 
 import colosseum as col
@@ -18,6 +17,8 @@ from support_captures import (
     verify_capture_appeared,
     verify_no_capture,
     write_gui_config,
+    wait_for_status,
+    log_size,
 )
 
 PAUSE_A = "pA7nQ1wX"
@@ -25,6 +26,9 @@ PAUSE_B = "pB8mR2yZ"
 
 
 def main() -> None:
+    from support_captures import require_live_execution
+
+    require_live_execution()
     if "PAY_ATTENTION_APPDATA" not in os.environ:
         make_appdata()
         os.environ["PAY_ATTENTION_APPDATA"] = str(appdata())
@@ -61,11 +65,15 @@ def main() -> None:
     col.gui.desktop.wait_stable(desktop_id=2, timeout_s=5.0)
     before = snapshot_captures()
     start_monitor_process()
-    verify_capture_appeared(key="before_pause", before=before, timeout_s=15.0)
+    verify_capture_appeared(
+        key="before_pause", before=before, timeout_s=15.0, trigger_text=PAUSE_A
+    )
 
     # One chord only — MOD_NOREPEAT must keep this from double-toggling.
+    mid = snapshot_captures()
+    log_before = log_size()
     col.gui.desktop.press_key(desktop_id=2, key="ctrl+shift+p")
-    time.sleep(0.5)
+    wait_for_status("Monitoring paused.", after=log_before)
 
     from colosseum_gui.connections import close_all
 
@@ -81,13 +89,15 @@ def main() -> None:
     col.config.load_config(str(gui), force=True)
     col.gui.desktop.connect(desktop_id=2)
     col.gui.desktop.wait_stable(desktop_id=2, timeout_s=5.0)
-    mid = snapshot_captures()
     verify_no_capture(key="paused_quiet", before=mid, settle_s=8.0)
 
-    col.gui.desktop.press_key(desktop_id=2, key="ctrl+shift+p")
-    time.sleep(0.5)
     after_resume = snapshot_captures()
-    verify_capture_appeared(key="after_resume", before=after_resume, timeout_s=15.0)
+    log_before = log_size()
+    col.gui.desktop.press_key(desktop_id=2, key="ctrl+shift+p")
+    wait_for_status("Monitoring resumed.", after=log_before)
+    verify_capture_appeared(
+        key="after_resume", before=after_resume, timeout_s=15.0, trigger_text=PAUSE_B
+    )
 
     close_all()
     stop_tracked_processes()

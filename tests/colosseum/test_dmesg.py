@@ -19,6 +19,9 @@ def _parse_latency(stdout: str, kind: str) -> int:
 
 
 def main() -> None:
+    from support_captures import require_live_execution
+
+    require_live_execution()
     """
     Fast-flowing white/red dmesg; MCE scrolls through mid-stream (no pause).
     Single trigger phrase: RIP !INEXACT! (screenshot + record).
@@ -37,9 +40,13 @@ def main() -> None:
     shot_ms = _parse_latency(stdout, "shot")
     rec_ms = _parse_latency(stdout, "rec")
     if shot_ms > LATENCY_BUDGET_MS:
-        raise AssertionError(f"shot latency {shot_ms}ms > {LATENCY_BUDGET_MS}ms\n{output}")
+        raise AssertionError(
+            f"shot latency {shot_ms}ms > {LATENCY_BUDGET_MS}ms\n{output}"
+        )
     if rec_ms > LATENCY_BUDGET_MS:
-        raise AssertionError(f"rec latency {rec_ms}ms > {LATENCY_BUDGET_MS}ms\n{output}")
+        raise AssertionError(
+            f"rec latency {rec_ms}ms > {LATENCY_BUDGET_MS}ms\n{output}"
+        )
 
 
 if __name__ == "__main__":

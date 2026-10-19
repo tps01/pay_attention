@@ -13,6 +13,9 @@ public sealed class CapturedFrame : IDisposable
     public int MonitorIndex { get; init; }
     public string MonitorName { get; init; } = string.Empty;
     public Rectangle ScreenBounds { get; init; }
+    internal long Epoch { get; set; }
+    internal IReadOnlyList<BufferedFrame>? RecordFrames { get; set; }
+    internal IReadOnlyList<BufferedFrame>? SequenceFrames { get; set; }
 
     public void Dispose() => Bitmap.Dispose();
 }

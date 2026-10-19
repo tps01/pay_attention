@@ -21,6 +21,9 @@ from support_captures import (
 
 
 def main() -> None:
+    from support_captures import require_live_execution
+
+    require_live_execution()
     if "PAY_ATTENTION_APPDATA" not in os.environ:
         make_appdata()
         os.environ["PAY_ATTENTION_APPDATA"] = str(appdata())

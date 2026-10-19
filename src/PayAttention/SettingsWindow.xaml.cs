@@ -151,9 +151,18 @@ public partial class SettingsWindow : Window
     }
 
     /// <summary>Fill the form from a calibration result without saving.</summary>
+    public AppConfig SnapshotConfig()
+    {
+        CommitGrids();
+        return BuildConfigFromUi();
+    }
+
     public void ApplyCalibrationResult(AppConfig config)
     {
-        ApplyConfigToUi(config);
+        // Preserve edits made while the asynchronous benchmark was running too.
+        var current = SnapshotConfig();
+        PerformanceProfiles.MergeCalibrationSettings(current, config);
+        ApplyConfigToUi(current);
         ShowAdvancedTab();
     }
 
@@ -167,7 +176,7 @@ public partial class SettingsWindow : Window
             if (result is null)
                 return;
 
-            ApplyConfigToUi(result.Config);
+            ApplyCalibrationResult(result.Config);
             ShowAdvancedTab();
             MessageBox.Show(
                 $"Chose {PerformanceProfiles.DisplayName(result.Chosen)}.\n\n{result.Summary}\n\nReview Advanced settings, then click Save.",
@@ -661,7 +670,7 @@ public partial class SettingsWindow : Window
         }
     }
 
-    private void Import_Click(object sender, RoutedEventArgs e)
+    private async void Import_Click(object sender, RoutedEventArgs e)
     {
         try
         {
@@ -687,9 +696,9 @@ public partial class SettingsWindow : Window
             var imported = _configService.ImportFrom(dialog.FileName);
             ApplyConfigToUi(imported);
             _configService.Save(imported);
-            AutostartService.SetEnabled(imported.StartWithWindows, Environment.ProcessPath ?? string.Empty);
+            _configService.ApplyAutostart(imported, Environment.ProcessPath ?? string.Empty);
             _monitor.UpdateConfig(imported);
-            _monitor.RestartIfRunning();
+            await _monitor.RestartIfRunningAsync();
             _logger.MinLevel = imported.LogLevel;
             ConfigSaved?.Invoke(this, imported);
             _logger.Info($"Config imported from {dialog.FileName}");
@@ -706,7 +715,7 @@ public partial class SettingsWindow : Window
         }
     }
 
-    private void Save_Click(object sender, RoutedEventArgs e)
+    private async void Save_Click(object sender, RoutedEventArgs e)
     {
         try
         {
@@ -716,9 +725,9 @@ public partial class SettingsWindow : Window
             _configService.Save(config);
             // Reflect clamps / normalized paths back into the form.
             ApplyConfigToUi(config);
-            AutostartService.SetEnabled(config.StartWithWindows, Environment.ProcessPath ?? string.Empty);
+            _configService.ApplyAutostart(config, Environment.ProcessPath ?? string.Empty);
             _monitor.UpdateConfig(config);
-            _monitor.RestartIfRunning();
+            await _monitor.RestartIfRunningAsync();
             _logger.MinLevel = config.LogLevel;
             ConfigSaved?.Invoke(this, config);
             _logger.Info("Settings saved.");

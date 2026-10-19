@@ -7,14 +7,39 @@ using System.Runtime.InteropServices;
 namespace PayAttention.Capture;
 
 /// <summary>
-/// Perceptual-ish average hash of a frame for "has the screen meaningfully changed?" checks.
-/// Heavy downscale ignores mouse-sized / clock-tick noise.
+/// Text-sensitive content identity for monitoring, plus legacy perceptual-hash helpers.
 /// </summary>
 public static class FrameFingerprint
 {
     public const int GridSize = 8;
     /// <summary>Max Hamming distance (of 64 bits) treated as the same scene.</summary>
     public const int DefaultMaxDistance = 10;
+
+    /// <summary>Text-sensitive scene identity; 5-bit RGB quantization ignores tiny color noise.</summary>
+    public static ulong ComputeContentHash(Bitmap source)
+    {
+        var bounds = new Rectangle(0, 0, source.Width, source.Height);
+        var data = source.LockBits(bounds, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            const ulong offset = 14695981039346656037;
+            const ulong prime = 1099511628211;
+            var hash = (offset ^ (uint)source.Width) * prime ^ (uint)source.Height;
+            var row = new byte[Math.Abs(data.Stride)];
+            for (var y = 0; y < source.Height; y += 2)
+            {
+                Marshal.Copy(data.Scan0 + y * data.Stride, row, 0, source.Width * 4);
+                for (var x = 0; x < source.Width; x += 2)
+                {
+                    var i = x * 4;
+                    var color = (row[i] >> 3) | ((row[i + 1] >> 3) << 5) | ((row[i + 2] >> 3) << 10);
+                    hash = (hash ^ (uint)color) * prime;
+                }
+            }
+            return hash;
+        }
+        finally { source.UnlockBits(data); }
+    }
 
     public static ulong ComputeAverageHash(Bitmap source)
     {
