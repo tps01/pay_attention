@@ -118,12 +118,16 @@ public sealed class CapturePipelineTests
         File.WriteAllText(config.CaptureDirectory, "A file occupies the intended folder");
         var failed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var fired = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var monitor = new CaptureMonitor(config, new AppLogger(Path.Combine(dir.Root, "logs")), Services((_, _) => Task.FromResult("PIPELINE_TOKEN")));
+        var logger = new AppLogger(Path.Combine(dir.Root, "logs")) { MinLevel = LogLevel.Debug };
+        using var monitor = new CaptureMonitor(config, logger, Services((_, _) => Task.FromResult("PIPELINE_TOKEN")));
         monitor.StatusChanged += (_, e) => { if (e.Status == "Warning") failed.TrySetResult(); };
         monitor.TriggerFired += (_, e) => fired.TrySetResult(e.OutputPath);
         monitor.Start(); await failed.Task.WaitAsync(TimeSpan.FromSeconds(5));
         File.Delete(config.CaptureDirectory); Directory.CreateDirectory(config.CaptureDirectory);
-        Assert.True(File.Exists(await fired.Task.WaitAsync(TimeSpan.FromSeconds(5))));
+        // This checks eventual persistence, not a machine-specific throughput budget.
+        var settled = await Task.WhenAny(fired.Task, Task.Delay(TimeSpan.FromSeconds(15)));
+        Assert.True(settled == fired.Task, string.Join("\n", Directory.GetFiles(logger.LogDirectory, "*.log").Select(File.ReadAllText)));
+        Assert.True(File.Exists(await fired.Task));
         await monitor.StopAsync();
     }
 

@@ -80,12 +80,13 @@ internal sealed class OcrFrameQueue : IDisposable
         PhaseProfiler? profiler = null,
         AppLogger? logger = null)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-
-        var fg = ApplicationScopeEvaluator.NormalizeProcessName(foregroundProcess);
-        var forcedResample = false;
+        // A reader can finish OCR immediately after TryWrite. Its resample request
+        // must happen after this producer commits the enqueue fingerprint/deadline.
         lock (_fingerprintLock)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            var fg = ApplicationScopeEvaluator.NormalizeProcessName(foregroundProcess);
             var fgChanged = !string.Equals(_lastEnqueuedForeground, fg, StringComparison.OrdinalIgnoreCase);
             var sceneUnchanged = _lastEnqueuedFingerprint is ulong prev &&
                                  FrameFingerprint.IsSimilar(prev, fingerprint, EnqueueMaxHammingDistance);
@@ -98,53 +99,50 @@ internal sealed class OcrFrameQueue : IDisposable
                 return false;
             }
 
-            forcedResample = sceneUnchanged && !fgChanged && forceDue;
-        }
+            var forcedResample = sceneUnchanged && !fgChanged && forceDue;
 
-        var cloneStart = Stopwatch.GetTimestamp();
-        var queued = new OcrQueuedFrame(
-            (Bitmap)frame.Bitmap.Clone(),
-            frame.Timestamp,
-            frame.MonitorIndex,
-            frame.MonitorName,
-            frame.ScreenBounds,
-            fingerprint,
-            foregroundProcess,
-            frame.Epoch,
-            frame.RecordFrames,
-            frame.SequenceFrames);
+            var cloneStart = Stopwatch.GetTimestamp();
+            var queued = new OcrQueuedFrame(
+                (Bitmap)frame.Bitmap.Clone(),
+                frame.Timestamp,
+                frame.MonitorIndex,
+                frame.MonitorName,
+                frame.ScreenBounds,
+                fingerprint,
+                foregroundProcess,
+                frame.Epoch,
+                frame.RecordFrames,
+                frame.SequenceFrames);
 
-        while (!_channel.Writer.TryWrite(queued))
-        {
-            if (_channel.Reader.TryRead(out var oldest))
+            while (!_channel.Writer.TryWrite(queued))
             {
-                oldest.Dispose();
-                continue;
+                if (_channel.Reader.TryRead(out var oldest))
+                {
+                    oldest.Dispose();
+                    continue;
+                }
+
+                // Completed or raced empty while "full" — drop this frame.
+                queued.Dispose();
+                if (profiler is not null && logger is not null)
+                    profiler.Record("enqueue.clone", cloneStart, logger);
+                decision = OcrEnqueueDecision.Dropped;
+                return false;
             }
 
-            // Completed or raced empty while "full" — drop this frame.
-            queued.Dispose();
-            if (profiler is not null && logger is not null)
-                profiler.Record("enqueue.clone", cloneStart, logger);
-            decision = OcrEnqueueDecision.Dropped;
-            return false;
-        }
-
-        // Commit the gate only after the frame is queued. A failed write must not
-        // look like this scene was already sampled.
-        lock (_fingerprintLock)
-        {
+            // Commit the gate only after the frame is queued. A failed write must not
+            // look like this scene was already sampled.
             _lastEnqueuedFingerprint = fingerprint;
             _lastEnqueuedForeground = fg;
             _forceResampleAfterUtc = null;
-        }
 
-        if (profiler is not null && logger is not null)
-            profiler.Record("enqueue.clone", cloneStart, logger);
-        decision = forcedResample
-            ? OcrEnqueueDecision.EnqueuedForcedResample
-            : OcrEnqueueDecision.Enqueued;
-        return true;
+            if (profiler is not null && logger is not null)
+                profiler.Record("enqueue.clone", cloneStart, logger);
+            decision = forcedResample
+                ? OcrEnqueueDecision.EnqueuedForcedResample
+                : OcrEnqueueDecision.Enqueued;
+            return true;
+        }
     }
 
     /// <summary>
