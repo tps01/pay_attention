@@ -8,6 +8,15 @@ namespace PayAttention.Core.Services;
 /// </summary>
 public static class PerformanceProfiles
 {
+    /// <summary>Merge benchmark settings into the latest unsaved form, preserving user content.</summary>
+    public static void MergeCalibrationSettings(AppConfig current, AppConfig calibrated)
+    {
+        foreach (var field in typeof(AppConfig).GetProperties().Where(p =>
+                     p.Name.StartsWith("Ocr", StringComparison.Ordinal) ||
+                     p.Name is nameof(AppConfig.UseBackgroundPriority) or nameof(AppConfig.AppliedPerformanceProfile) or nameof(AppConfig.LastCalibrationSummary)))
+            field.SetValue(current, field.GetValue(calibrated));
+    }
+
     public const string PlainToken = "PAYATTN PLAIN OK";
     public const string NeonToken = "PAYATTN NEON OK";
 

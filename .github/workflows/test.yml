@@ -1,0 +1,29 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [develop]
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - run: dotnet build PayAttention.sln -c Release --nologo
+      - run: dotnet test tests/PayAttention.Tests/PayAttention.Tests.csproj -c Release --no-build --nologo
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install offline-helper test dependencies
+        run: >-
+          python -m pip install pytest Pillow
+          https://github.com/tps01/colosseum-core/releases/download/v0.16.6/colosseum_core-0.16.6-py3-none-any.whl
+      - run: python -m pytest tests/python -q

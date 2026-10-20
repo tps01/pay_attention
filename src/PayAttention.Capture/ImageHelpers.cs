@@ -545,6 +545,138 @@ public static class ImageHelpers
         return source.Clone(local, source.PixelFormat);
     }
 
+    /// <summary>
+    /// Bitmap-local crops of visible windows to OCR before a full-monitor pass.
+    /// Near-fullscreen windows stay with that pass. Caller order is Z-order, and
+    /// that order is kept so the topmost fixture is OCR'd before smaller leftovers.
+    /// </summary>
+    public static IReadOnlyList<Rectangle> SelectFrozenWindowCrops(
+        IReadOnlyList<Rectangle> windowScreenBounds,
+        Rectangle screenBounds,
+        int bitmapWidth,
+        int bitmapHeight,
+        int maxWindows)
+    {
+        if (maxWindows < 1 || bitmapWidth < 1 || bitmapHeight < 1 || windowScreenBounds.Count == 0)
+            return [];
+
+        var bitmapBounds = new Rectangle(0, 0, bitmapWidth, bitmapHeight);
+        var frameArea = (long)bitmapWidth * bitmapHeight;
+        var crops = new List<Rectangle>(windowScreenBounds.Count);
+        foreach (var window in windowScreenBounds)
+        {
+            var overlap = Rectangle.Intersect(window, screenBounds);
+            if (overlap.Width < 120 || overlap.Height < 80)
+                continue;
+
+            var local = new Rectangle(
+                overlap.X - screenBounds.X,
+                overlap.Y - screenBounds.Y,
+                overlap.Width,
+                overlap.Height);
+            local.Intersect(bitmapBounds);
+            if (local.Width < 120 || local.Height < 80)
+                continue;
+
+            var area = (long)local.Width * local.Height;
+            if (area * 100 >= frameArea * 45)
+                continue;
+
+            crops.Add(local);
+        }
+
+        return crops.Take(maxWindows).ToList();
+    }
+
+    /// <summary>Isolate individual lines in dark terminal panes before OCR groups them with noise.</summary>
+    public static IReadOnlyList<Rectangle> FindTerminalTextLines(Bitmap bitmap, int maxLines = 12)
+    {
+        var source = EnsureArgb32(bitmap, out var owned);
+        var lines = new List<Rectangle>();
+        var bounds = new Rectangle(0, 0, source.Width, source.Height);
+        var data = source.LockBits(bounds, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            var row = new byte[source.Width * 4];
+            var start = -1;
+            var lineLeft = source.Width;
+            var lineRight = 0;
+            for (var y = 0; y <= source.Height && lines.Count < maxLines; y++)
+            {
+                var ink = 0;
+                var dark = 0;
+                var inkLeft = source.Width;
+                var inkRight = 0;
+                if (y < source.Height)
+                {
+                    System.Runtime.InteropServices.Marshal.Copy(data.Scan0 + y * data.Stride, row, 0, row.Length);
+                    // Exclude window borders and vertical scrollbars: otherwise their
+                    // bright pixels join every text row into one continuous region.
+                    var left = Math.Min(4, source.Width / 10);
+                    var right = Math.Max(left, source.Width - Math.Min(24, source.Width / 10));
+                    for (var x = left; x < right; x++)
+                    {
+                        var i = x * 4;
+                        var peak = Math.Max(row[i], Math.Max(row[i + 1], row[i + 2]));
+                        if (peak >= 80)
+                        {
+                            ink++;
+                            inkLeft = Math.Min(inkLeft, x);
+                            inkRight = Math.Max(inkRight, x + 1);
+                        }
+                        if (peak < 64) dark++;
+                    }
+                }
+                var textRow = ink >= 3 && dark > source.Width / 2;
+                if (textRow && start < 0) start = y;
+                if (textRow)
+                {
+                    lineLeft = Math.Min(lineLeft, inkLeft);
+                    lineRight = Math.Max(lineRight, inkRight);
+                }
+                if (!textRow && start >= 0)
+                {
+                    if (y - start >= 4 && y - start <= 48)
+                    {
+                        var top = Math.Max(0, start - 4);
+                        var left = Math.Max(0, lineLeft - 4);
+                        lines.Add(new Rectangle(left, top, Math.Min(source.Width, lineRight + 4) - left,
+                            Math.Min(source.Height, y + 4) - top));
+                    }
+                    start = -1;
+                    lineLeft = source.Width;
+                    lineRight = 0;
+                }
+            }
+        }
+        finally
+        {
+            source.UnlockBits(data);
+            if (owned) source.Dispose();
+        }
+        return lines;
+    }
+
+    /// <summary>Alternative crop excluding the last isolated glyph (e.g. a terminal delimiter).</summary>
+    public static Rectangle? TrimTerminalLineEnding(Bitmap line)
+    {
+        bool HasInk(int x)
+        {
+            for (var y = 0; y < line.Height; y++)
+            {
+                var pixel = line.GetPixel(x, y);
+                if (Math.Max(pixel.R, Math.Max(pixel.G, pixel.B)) >= 80) return true;
+            }
+            return false;
+        }
+        var right = line.Width - 1;
+        while (right >= 0 && !HasInk(right)) right--;
+        var start = right;
+        while (start >= 0 && HasInk(start)) start--;
+        if (start < line.Height * 2 || right - start > line.Height * 2) return null;
+        return new Rectangle(0, 0, start + 1, line.Height);
+    }
+
     public static byte[] EncodeJpeg(Bitmap bitmap, long quality = 70L)
     {
         using var ms = new MemoryStream();

@@ -4,7 +4,7 @@ public sealed class AppConfig
 {
     public int OcrIntervalMs { get; set; } = 500;
     /// <summary>
-    /// How closely Fast OCR triggers must match (50–100). 100 ≈ today’s rules; lower is looser.
+    /// How closely Fast OCR triggers must match (50–100). 100 requires normalized equality; lower is looser.
     /// </summary>
     public int FastMatchThresholdPercent { get; set; } = 90;
     public int DebounceSeconds { get; set; } = 30;
@@ -27,7 +27,7 @@ public sealed class AppConfig
     public bool OcrEnableNeon { get; set; } = true;
     public bool OcrEnableTerminal { get; set; } = true;
     public int OcrTerminalMaxRegions { get; set; } = 4;
-    /// <summary>Max windows OCR'd in AllMinusBlacklisted monitor mode (1–12).</summary>
+    /// <summary>Maximum capture-time window crops searched before the full-frame fallback.</summary>
     public int OcrMaxWindows { get; set; } = 12;
     public int OcrQueueCapacity { get; set; } = 4;
     public int OcrCascadeBudgetFastMs { get; set; } = 400;

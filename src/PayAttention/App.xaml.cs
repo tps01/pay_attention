@@ -25,6 +25,10 @@ public partial class App : Application, IDisposable
     private SettingsWindow? _settingsWindow;
     private HotkeyService? _hotkey;
     private ToolStripMenuItem? _startStopItem;
+    private ToolStripMenuItem? _pauseItem;
+    private System.Windows.Threading.DispatcherTimer? _retentionTimer;
+    private Task _maintenance = Task.CompletedTask;
+    private bool _exiting;
     private string _statusText = "Stopped";
     private bool _cleanedUp;
     /// <summary>CLI: show Settings as the main window (for FlaUI / Colosseum).</summary>
@@ -82,8 +86,8 @@ public partial class App : Application, IDisposable
         }
 
         // Never rewrite the user's Run key when using a temp app-data root.
-        if (!_configService.IsIsolatedAppData)
-            AutostartService.SetEnabled(_config.StartWithWindows, Environment.ProcessPath ?? string.Empty);
+        if (string.IsNullOrEmpty(load.Warning))
+            _configService.ApplyAutostart(_config, Environment.ProcessPath ?? string.Empty);
 
         _monitor = new CaptureMonitor(_config, _logger);
         _monitor.StatusChanged += (_, args) =>
@@ -128,7 +132,7 @@ public partial class App : Application, IDisposable
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
         }
-        else if (_startOnLaunch || _config.StartMonitoringOnLaunch)
+        else if (!load.ResetToDefaults && string.IsNullOrEmpty(load.Warning) && (_startOnLaunch || _config.StartMonitoringOnLaunch))
         {
             _monitor.Start();
             if (_startOnLaunch)
@@ -142,6 +146,22 @@ public partial class App : Application, IDisposable
             _config.RetentionMaxFiles,
             _logger);
         _logger.EnforceRetention();
+        _retentionTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
+        _retentionTimer.Tick += (_, _) =>
+        {
+            if (!_maintenance.IsCompleted) return;
+            var config = _config;
+            _maintenance = Task.Run(() =>
+            {
+                try
+                {
+                    RetentionService.Enforce(config.CaptureDirectory, config.RetentionMaxAgeDays, config.RetentionMaxFiles, _logger);
+                    _logger.EnforceRetention();
+                }
+                catch (Exception ex) { _logger.Error("Retention failed", ex); }
+            });
+        };
+        _retentionTimer.Start();
 
         if (_settingsOnly)
         {
@@ -202,6 +222,12 @@ public partial class App : Application, IDisposable
 
         var menu = new ContextMenuStrip();
         menu.Items.Add(_startStopItem);
+        _pauseItem = new ToolStripMenuItem("Pause monitoring", null, (_, _) =>
+        {
+            if (_monitor.IsRunning) _monitor.TogglePause();
+            UpdateTrayText();
+        });
+        menu.Items.Add(_pauseItem);
         menu.Items.Add(new ToolStripMenuItem("Settings...", null, (_, _) => OpenSettings()));
         menu.Items.Add(new ToolStripMenuItem(
             "Optimize for this PC...",
@@ -264,10 +290,10 @@ public partial class App : Application, IDisposable
             MessageBoxImage.Information);
     }
 
-    private void ToggleMonitoring()
+    private async void ToggleMonitoring()
     {
         if (_monitor.IsRunning)
-            _monitor.Stop();
+            await _monitor.StopAsync();
         else
             _monitor.Start();
         UpdateTrayText();
@@ -285,6 +311,11 @@ public partial class App : Application, IDisposable
         _tray.Text = Truncate($"pay_attention - {state}");
         if (_startStopItem is not null)
             _startStopItem.Text = _monitor.IsRunning ? "Stop monitoring" : "Start monitoring";
+        if (_pauseItem is not null)
+        {
+            _pauseItem.Enabled = _monitor.IsRunning;
+            _pauseItem.Text = _monitor.IsPaused ? "Resume monitoring" : "Pause monitoring";
+        }
     }
 
     private static string Truncate(string text) =>
@@ -344,7 +375,7 @@ public partial class App : Application, IDisposable
 
             var result = await OptimizeForThisPcRunner.RunAsync(
                 _settingsWindow,
-                _config,
+                _settingsWindow.SnapshotConfig(),
                 _monitor,
                 _logger);
             if (result is null)
@@ -437,8 +468,13 @@ public partial class App : Application, IDisposable
         }
     }
 
-    private void ExitApp()
+    private async void ExitApp()
     {
+        if (_exiting) return;
+        _exiting = true;
+        _retentionTimer?.Stop();
+        await _monitor.StopAsync();
+        await _maintenance;
         Cleanup();
         Shutdown();
     }
@@ -454,6 +490,7 @@ public partial class App : Application, IDisposable
         if (_cleanedUp)
             return;
         _cleanedUp = true;
+        _retentionTimer?.Stop();
 
         _hotkey?.Dispose();
         _hotkey = null;

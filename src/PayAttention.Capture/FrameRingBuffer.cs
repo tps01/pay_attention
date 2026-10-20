@@ -39,7 +39,7 @@ public sealed class FrameRingBuffer : IDisposable
         lock (_lock)
         {
             _capacity = capacity < TimeSpan.Zero ? TimeSpan.Zero : capacity;
-            _minGap = minGap < TimeSpan.FromMilliseconds(100) ? TimeSpan.FromMilliseconds(100) : minGap;
+            _minGap = minGap < TimeSpan.FromSeconds(1.0 / 30) ? TimeSpan.FromSeconds(1.0 / 30) : minGap;
             TrimUnlocked(DateTimeOffset.UtcNow);
         }
     }
@@ -96,6 +96,12 @@ public sealed class FrameRingBuffer : IDisposable
         {
             return _frames.ToList();
         }
+    }
+
+    public IReadOnlyList<BufferedFrame> SnapshotAt(DateTimeOffset timestamp, TimeSpan window)
+    {
+        lock (_lock)
+            return _frames.Where(f => f.Timestamp <= timestamp && f.Timestamp >= timestamp - window).ToList();
     }
 
     private void TrimUnlocked(DateTimeOffset now)

@@ -5,12 +5,13 @@ from __future__ import annotations
 import re
 
 import colosseum as col
+from colosseum.decorators import VerificationResult, verification
 
 from support_captures import ensure_built, harness_output, run_harness
 
 LATENCY_BUDGET_MS = 15_000
 
-# Mirrors Harness PairwiseCases (1..8). Kind drives pass assertions.
+# Mirrors Harness PairwiseCases (1..10). Kind drives pass assertions.
 PAIRWISE_CASES: list[tuple[int, str]] = [
     (1, "static-single"),
     (2, "multi"),
@@ -20,6 +21,8 @@ PAIRWISE_CASES: list[tuple[int, str]] = [
     (6, "scroll-single"),
     (7, "static-single"),
     (8, "multi"),
+    (9, "scroll-single"),
+    (10, "multi"),
 ]
 
 
@@ -46,16 +49,22 @@ def _run_case(case_id: int, kind: str) -> None:
     if f"Pairwise: case={case_id}/" not in (result.stdout or ""):
         raise AssertionError(f"pairwise case {case_id}: missing case banner\n{output}")
     if "Mode: pairwise" not in (result.stdout or ""):
-        raise AssertionError(f"pairwise case {case_id}: missing Mode: pairwise\n{output}")
+        raise AssertionError(
+            f"pairwise case {case_id}: missing Mode: pairwise\n{output}"
+        )
 
     stdout = result.stdout or ""
     if kind == "multi":
         if "alpha:" not in stdout.lower() or "beta:" not in stdout.lower():
-            raise AssertionError(f"pairwise case {case_id}: expected alpha/beta captures\n{output}")
+            raise AssertionError(
+                f"pairwise case {case_id}: expected alpha/beta captures\n{output}"
+            )
         return
 
     if "screenshot:" not in stdout.lower() or "recording:" not in stdout.lower():
-        raise AssertionError(f"pairwise case {case_id}: expected screenshot+recording\n{output}")
+        raise AssertionError(
+            f"pairwise case {case_id}: expected screenshot+recording\n{output}"
+        )
 
     if kind == "scroll-single":
         if "LATENCY shot=" in stdout:
@@ -70,10 +79,27 @@ def _run_case(case_id: int, kind: str) -> None:
             raise AssertionError(f"pairwise case {case_id}: missing LATENCY\n{output}")
 
 
+@verification
+def verify_pairwise_outcome(*, key: str, passed: bool, message: str) -> VerificationResult:
+    return VerificationResult(status="PASS" if passed else "FAIL", message=message)
+
+
 def main() -> None:
+    from support_captures import require_live_execution
+
+    require_live_execution()
     ensure_built()
+    failures = []
     for case_id, kind in PAIRWISE_CASES:
-        _run_case(case_id, kind)
+        try:
+            _run_case(case_id, kind)
+        except AssertionError as exc:
+            failures.append(str(exc))
+            verify_pairwise_outcome(key=f"pairwise_{case_id}", passed=False, message=str(exc))
+        else:
+            verify_pairwise_outcome(key=f"pairwise_{case_id}", passed=True, message=f"case {case_id}: {kind}")
+    if failures:
+        raise AssertionError("\n\n".join(failures))
 
 
 if __name__ == "__main__":

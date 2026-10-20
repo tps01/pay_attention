@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="PayAttention.Tests" />
+    <InternalsVisibleTo Include="PayAttention.Harness" />
   </ItemGroup>
 
 </Project>

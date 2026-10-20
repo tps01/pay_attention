@@ -87,7 +87,8 @@ public enum OcrPrepOverride
 public enum LogLevel
 {
     Info = 0,
-    Debug = 1
+    Debug = 1,
+    Verbose = 2
 }
 
 /// <summary>

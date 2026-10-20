@@ -63,4 +63,52 @@ public class ImageHelpersCropTests
         Assert.Equal(Color.Blue.ToArgb(), desktop.GetPixel(15, 15).ToArgb());
         Assert.Equal(20, desktop.Width);
     }
+
+    [Fact]
+    public void SelectFrozenWindowCrops_keeps_fixture_and_skips_fullscreen_video()
+    {
+        var screen = new Rectangle(0, 0, 2560, 1440);
+        var windows = new[]
+        {
+            new Rectangle(0, 0, 2560, 1440),
+            new Rectangle(40, 40, 420, 320),
+            new Rectangle(500, 40, 340, 280),
+            new Rectangle(10, 10, 40, 20)
+        };
+
+        var crops = ImageHelpers.SelectFrozenWindowCrops(windows, screen, 2560, 1440, maxWindows: 12);
+
+        Assert.Equal(2, crops.Count);
+        Assert.Equal(new Rectangle(40, 40, 420, 320), crops[0]);
+        Assert.Equal(new Rectangle(500, 40, 340, 280), crops[1]);
+    }
+
+    [Fact]
+    public void SelectFrozenWindowCrops_respects_the_window_cap()
+    {
+        var screen = new Rectangle(0, 0, 2560, 1440);
+        var windows = new[]
+        {
+            new Rectangle(10, 10, 200, 150),
+            new Rectangle(300, 10, 220, 160),
+            new Rectangle(600, 10, 240, 170)
+        };
+
+        var crops = ImageHelpers.SelectFrozenWindowCrops(windows, screen, 2560, 1440, maxWindows: 1);
+
+        Assert.Single(crops);
+        Assert.Equal(new Rectangle(10, 10, 200, 150), crops[0]);
+    }
+
+    [Fact]
+    public void Evidence_still_quality_rises_for_a_full_monitor()
+    {
+        using var monitor = new Bitmap(2560, 1440, PixelFormat.Format32bppArgb);
+        using var fixture = new Bitmap(420, 320, PixelFormat.Format32bppArgb);
+
+        Assert.Equal(95, CaptureWriter.EvidenceStillQuality(monitor, 60));
+        Assert.Equal(70, CaptureWriter.EvidenceStillQuality(fixture, 70));
+        Assert.True(CaptureWriter.EvidenceStillIsLossless(monitor));
+        Assert.False(CaptureWriter.EvidenceStillIsLossless(fixture));
+    }
 }

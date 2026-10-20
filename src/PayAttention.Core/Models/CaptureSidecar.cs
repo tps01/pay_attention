@@ -2,6 +2,8 @@ namespace PayAttention.Core.Models;
 
 public sealed class CaptureSidecar
 {
+    public Guid EventId { get; set; } = Guid.NewGuid();
+    public Guid TriggerId { get; set; }
     public DateTimeOffset Timestamp { get; set; }
     public string MatchedText { get; set; } = string.Empty;
     public string TriggerText { get; set; } = string.Empty;
@@ -12,4 +14,5 @@ public sealed class CaptureSidecar
     public int MonitorIndex { get; set; }
     public string MonitorName { get; set; } = string.Empty;
     public string OcrSnippet { get; set; } = string.Empty;
+    public OcrEvidence? OcrEvidence { get; set; }
 }

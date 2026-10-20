@@ -13,6 +13,9 @@ _log = get_logger("pay_attention.colosseum")
 
 
 def main() -> None:
+    from support_captures import require_live_execution
+
+    require_live_execution()
     ensure_built()
     root = make_appdata()
     os.environ["PAY_ATTENTION_APPDATA"] = str(root)

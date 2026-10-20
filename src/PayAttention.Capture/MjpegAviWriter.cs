@@ -8,12 +8,12 @@ namespace PayAttention.Capture;
 /// </summary>
 public static class MjpegAviWriter
 {
-    public static void Write(string path, IReadOnlyList<BufferedFrame> frames, int fps)
+    public static void Write(string path, IReadOnlyList<BufferedFrame> frames, double fps)
     {
         if (frames.Count == 0)
             throw new InvalidOperationException("No frames available to write recording.");
 
-        fps = Math.Clamp(fps, 1, 30);
+        fps = Math.Clamp(fps, 0.01, 30);
         var width = frames[0].Width;
         var height = frames[0].Height;
 
@@ -29,7 +29,7 @@ public static class MjpegAviWriter
 
         var frameCount = usable.Count;
         var microSecPerFrame = (int)Math.Round(1_000_000.0 / fps);
-        var maxBytesPerSec = usable.Max(f => f.JpegBytes.Length) * fps;
+        var maxBytesPerSec = (int)Math.Ceiling(usable.Max(f => f.JpegBytes.Length) * fps);
         // LIST size includes the 4-byte list type ("movi"), same as hdrl/strl above.
         var moviSize = 4 + usable.Sum(f => 8 + AlignEven(f.JpegBytes.Length));
         var idx1Size = frameCount * 16;
@@ -83,8 +83,9 @@ public static class MjpegAviWriter
         bw.Write((short)0); // priority
         bw.Write((short)0); // language
         bw.Write(0); // initial frames
-        bw.Write(1); // scale
-        bw.Write(fps); // rate
+        const int timeScale = 1_000_000;
+        bw.Write(timeScale); // rational time base supports sparse (<1 FPS) captures
+        bw.Write((int)Math.Round(fps * timeScale)); // rate
         bw.Write(0); // start
         bw.Write(frameCount); // length
         bw.Write(usable.Max(f => f.JpegBytes.Length)); // suggested buffer

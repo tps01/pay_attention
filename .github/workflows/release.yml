@@ -32,6 +32,9 @@ jobs:
           "semver=$semver" >> $env:GITHUB_OUTPUT
           "zipname=PayAttention-$semver-win-x64.zip" >> $env:GITHUB_OUTPUT
 
+      - name: Test before publishing
+        run: dotnet test tests/PayAttention.Tests/PayAttention.Tests.csproj -c Release --nologo
+
       - name: Publish
         shell: pwsh
         run: .\scripts\publish.ps1 -Version "${{ steps.ver.outputs.semver }}"

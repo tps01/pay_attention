@@ -10,20 +10,24 @@ public static class RetentionService
             return 0;
 
         // Companion files that share a base name (still + video + sidecar) are one unit.
-        // Each *_sequence folder is one unit.
+        // Each owned sequence folder is one unit.
         var units = new List<RetentionUnit>();
 
         var groups = new Dictionary<string, List<FileInfo>>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in Directory.EnumerateFiles(captureDirectory)
-                     .Where(f => CaptureExtensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase)))
+                     .Where(f => CaptureExtensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase) &&
+                                 CaptureOwnership.IsOwnedName(CaptureOwnership.FileStem(f))))
         {
             try
             {
                 var info = new FileInfo(file);
                 if (!info.Exists)
                     continue;
+                if ((info.Attributes & FileAttributes.ReparsePoint) != 0 ||
+                    File.Exists(Path.Combine(captureDirectory, CaptureOwnership.FileStem(file) + ".pending")))
+                    continue;
                 // Still + video + sidecar share a base name and are one capture.
-                var key = Path.GetFileNameWithoutExtension(info.Name);
+                var key = CaptureOwnership.FileStem(info.Name);
                 if (!groups.TryGetValue(key, out var list))
                 {
                     list = [];
@@ -43,12 +47,14 @@ public static class RetentionService
 
         foreach (var dir in Directory.EnumerateDirectories(captureDirectory))
         {
-            if (!Path.GetFileName(dir).EndsWith("_sequence", StringComparison.OrdinalIgnoreCase))
+            if (!CaptureOwnership.IsOwnedName(Path.GetFileName(dir)) ||
+                !Path.GetFileName(dir).EndsWith("_sequence", StringComparison.OrdinalIgnoreCase) ||
+                File.Exists(Path.Combine(dir, ".pending")))
                 continue;
             try
             {
                 var info = new DirectoryInfo(dir);
-                if (info.Exists)
+                if (info.Exists && !ContainsReparsePoint(info.FullName))
                     units.Add(RetentionUnit.ForDirectory(info));
             }
             catch
@@ -100,7 +106,12 @@ public static class RetentionService
             try
             {
                 if (unit.IsDirectory)
+                {
+                    // Never traverse a link in an owned sequence folder.
+                    if (ContainsReparsePoint(path) || File.Exists(Path.Combine(path, ".pending")))
+                        return false;
                     Directory.Delete(path, recursive: true);
+                }
                 else
                     File.Delete(path);
                 deletedAny = true;
@@ -116,6 +127,26 @@ public static class RetentionService
 
         // A leftover companion still counts until a later pass removes it.
         return unit.Paths.All(path => unit.IsDirectory ? !Directory.Exists(path) : !File.Exists(path));
+    }
+
+    private static bool ContainsReparsePoint(string directory)
+    {
+        var pending = new Stack<string>();
+        pending.Push(Path.GetFullPath(directory));
+        while (pending.TryPop(out var path))
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                return true;
+            foreach (var entry in Directory.EnumerateFileSystemEntries(path))
+            {
+                var attributes = File.GetAttributes(entry);
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    return true;
+                if ((attributes & FileAttributes.Directory) != 0)
+                    pending.Push(entry);
+            }
+        }
+        return false;
     }
 
     private sealed class RetentionUnit

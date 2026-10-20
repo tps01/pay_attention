@@ -18,6 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\PayAttention.Harness\MediaProof.cs" Link="MediaProof.cs" />
     <ProjectReference Include="..\..\src\PayAttention.Capture\PayAttention.Capture.csproj" />
     <ProjectReference Include="..\..\src\PayAttention.Core\PayAttention.Core.csproj" />
   </ItemGroup>

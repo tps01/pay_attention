@@ -11,11 +11,11 @@ Local only, with no cloud support.
 Prefer a **[GitHub Release](https://github.com/tps01/pay_attention/releases)** zip (exe + user guide). To publish one after pushing code:
 
 ```powershell
-git tag v1.5.2
-git push origin v1.5.2
+git tag v1.5.3
+git push origin v1.5.3
 ```
 
-That runs CI, builds the win-x64 package, and attaches `PayAttention-1.5.2-win-x64.zip` to the release.
+That runs CI, builds the win-x64 package, and attaches `PayAttention-1.5.3-win-x64.zip` to the release.
 
 Or build locally with the .NET 8 SDK and hand them `publish\`:
 
@@ -59,7 +59,7 @@ Or build locally with the .NET 8 SDK and hand them `publish\`:
 .\scripts\publish.ps1
 ```
 
-Optional version for About / assembly info: `.\scripts\publish.ps1 -Version 1.5.2`
+Optional version for About / assembly info: `.\scripts\publish.ps1 -Version 1.5.3`
 
 Or `scripts\publish.bat` if script execution is blocked. Output: `publish\PayAttention.exe` and usually `publish\PayAttention-UserGuide.pdf`.
 
@@ -115,3 +115,11 @@ See [tests/colosseum/README.md](tests/colosseum/README.md).
 ```powershell
 colosseum run-suite tests/colosseum/suite.toml -g tests/colosseum/config.toml
 ```
+
+### Capture correctness in 1.5.3
+
+OCR matches the frozen, scope-filtered image saved as evidence. Foreground capture failures skip the sample rather than expanding to a monitor. Pause invalidates queued/in-flight OCR and stops sequence continuation; already committed writes finish, and Stop/Exit await them asynchronously.
+
+Captures use `pa_<timestamp>_<event-id>_<label>_<action>` names and lightweight `.capture.json` completion receipts (trigger/event IDs, paths and status, without OCR text). Retention recognizes this reserved namespace, groups companion files, and skips active writes and linked directories. **Files from 1.5.2 and earlier are preserved; remove old captures manually if needed.** Retention runs once per minute while the app is open, including while monitoring is stopped or paused.
+
+See [the audit fix ledger](docs/AuditFixes.md) for all 24 findings, regression coverage and validation limits.

@@ -132,6 +132,18 @@ public class TriggerFireGateTests
     }
 
     [Fact]
+    public void Time_until_retry_is_the_remaining_debounce()
+    {
+        var gate = new TriggerFireGate();
+        Assert.Null(gate.TimeUntilRetry("missing", TimeSpan.FromSeconds(5)));
+
+        Assert.True(gate.ShouldFire("t", TimeSpan.FromSeconds(30), fingerprint: 0x1UL));
+        var remain = gate.TimeUntilRetry("t", TimeSpan.FromSeconds(30));
+        Assert.NotNull(remain);
+        Assert.InRange(remain!.Value.TotalSeconds, 25, 30);
+    }
+
+    [Fact]
     public void Reset_allows_immediate_refire()
     {
         var gate = new TriggerFireGate();

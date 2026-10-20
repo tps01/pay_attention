@@ -29,7 +29,7 @@ public sealed class PhaseProfiler
 
     private void RecordElapsed(string phase, long elapsedTicks, AppLogger logger)
     {
-        if (logger.MinLevel != LogLevel.Debug || elapsedTicks < 0)
+        if (!logger.IsDebugEnabled || elapsedTicks < 0)
             return;
 
         lock (_lock)
@@ -131,7 +131,7 @@ public sealed class PhaseProfiler
     /// </summary>
     public void FlushTo(AppLogger logger, string? windowLabel = null, string? context = null)
     {
-        if (logger.MinLevel != LogLevel.Debug)
+        if (!logger.IsDebugEnabled)
         {
             // Drop samples so a later Debug session does not include Info-era noise.
             lock (_lock)

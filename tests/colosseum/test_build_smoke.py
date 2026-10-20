@@ -12,20 +12,16 @@ from support_captures import REPO_ROOT
 
 
 def main() -> None:
+    from support_captures import require_live_execution
+
+    require_live_execution()
     if shutil.which("dotnet") is None:
         raise RuntimeError("dotnet SDK not on PATH")
 
     env = {**os.environ, "DOTNET_NOLOGO": "1"}
-    build = subprocess.run(
-        ["dotnet", "build", "PayAttention.sln", "-c", "Release", "--nologo"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        env=env,
-    )
-    if build.returncode != 0:
-        raise AssertionError(build.stdout + "\n" + build.stderr)
+    from support_captures import ensure_built
+
+    ensure_built()
 
     test_cmd = [
         "dotnet",

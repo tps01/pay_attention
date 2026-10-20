@@ -25,10 +25,9 @@ internal sealed class OcrFrameQueue : IDisposable
     public const int DefaultCapacity = 4;
 
     /// <summary>
-    /// Stricter than fire-gate similarity: scrolling a single console line must still enqueue.
-    /// Default Hamming≤10 treats most line-scrolls as "same scene" after 8×8 downscale.
+    /// Content hashes must be equal to suppress a frame; line changes must enqueue.
     /// </summary>
-    public const int EnqueueMaxHammingDistance = 2;
+    public const int EnqueueMaxHammingDistance = 0;
 
     /// <summary>
     /// Re-OCR an unchanged scene after this long when enabled triggers remain unmatched
@@ -42,6 +41,8 @@ internal sealed class OcrFrameQueue : IDisposable
     private string? _lastEnqueuedForeground;
     private DateTimeOffset? _forceResampleAfterUtc;
     private bool _disposed;
+    private long _droppedOldest;
+    public long DroppedOldest => Interlocked.Read(ref _droppedOldest);
 
     public OcrFrameQueue(int capacity = DefaultCapacity)
     {
@@ -81,12 +82,13 @@ internal sealed class OcrFrameQueue : IDisposable
         PhaseProfiler? profiler = null,
         AppLogger? logger = null)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-
-        var fg = ApplicationScopeEvaluator.NormalizeProcessName(foregroundProcess);
-        var forcedResample = false;
+        // A reader can finish OCR immediately after TryWrite. Its resample request
+        // must happen after this producer commits the enqueue fingerprint/deadline.
         lock (_fingerprintLock)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            var fg = ApplicationScopeEvaluator.NormalizeProcessName(foregroundProcess);
             var fgChanged = !string.Equals(_lastEnqueuedForeground, fg, StringComparison.OrdinalIgnoreCase);
             var sceneUnchanged = _lastEnqueuedFingerprint is ulong prev &&
                                  FrameFingerprint.IsSimilar(prev, fingerprint, EnqueueMaxHammingDistance);
@@ -99,50 +101,52 @@ internal sealed class OcrFrameQueue : IDisposable
                 return false;
             }
 
-            forcedResample = sceneUnchanged && !fgChanged && forceDue;
-        }
+            var forcedResample = sceneUnchanged && !fgChanged && forceDue;
 
-        var cloneStart = Stopwatch.GetTimestamp();
-        var queued = new OcrQueuedFrame(
-            (Bitmap)frame.Bitmap.Clone(),
-            frame.Timestamp,
-            frame.MonitorIndex,
-            frame.MonitorName,
-            frame.ScreenBounds,
-            fingerprint,
-            foregroundProcess);
+            var cloneStart = Stopwatch.GetTimestamp();
+            var queued = new OcrQueuedFrame(
+                (Bitmap)frame.Bitmap.Clone(),
+                frame.Timestamp,
+                frame.MonitorIndex,
+                frame.MonitorName,
+                frame.ScreenBounds,
+                fingerprint,
+                foregroundProcess,
+                frame.Epoch,
+                frame.RecordFrames,
+                frame.SequenceFrames,
+                frame.OcrEvidence);
 
-        while (!_channel.Writer.TryWrite(queued))
-        {
-            if (_channel.Reader.TryRead(out var oldest))
+            while (!_channel.Writer.TryWrite(queued))
             {
-                oldest.Dispose();
-                continue;
+                if (_channel.Reader.TryRead(out var oldest))
+                {
+                    Interlocked.Increment(ref _droppedOldest);
+                    oldest.Dispose();
+                    continue;
+                }
+
+                // Completed or raced empty while "full" — drop this frame.
+                queued.Dispose();
+                if (profiler is not null && logger is not null)
+                    profiler.Record("enqueue.clone", cloneStart, logger);
+                decision = OcrEnqueueDecision.Dropped;
+                return false;
             }
 
-            // Completed or raced empty while "full" — drop this frame.
-            queued.Dispose();
-            if (profiler is not null && logger is not null)
-                profiler.Record("enqueue.clone", cloneStart, logger);
-            decision = OcrEnqueueDecision.Dropped;
-            return false;
-        }
-
-        // Commit the gate only after the frame is queued. A failed write must not
-        // look like this scene was already sampled.
-        lock (_fingerprintLock)
-        {
+            // Commit the gate only after the frame is queued. A failed write must not
+            // look like this scene was already sampled.
             _lastEnqueuedFingerprint = fingerprint;
             _lastEnqueuedForeground = fg;
             _forceResampleAfterUtc = null;
-        }
 
-        if (profiler is not null && logger is not null)
-            profiler.Record("enqueue.clone", cloneStart, logger);
-        decision = forcedResample
-            ? OcrEnqueueDecision.EnqueuedForcedResample
-            : OcrEnqueueDecision.Enqueued;
-        return true;
+            if (profiler is not null && logger is not null)
+                profiler.Record("enqueue.clone", cloneStart, logger);
+            decision = forcedResample
+                ? OcrEnqueueDecision.EnqueuedForcedResample
+                : OcrEnqueueDecision.Enqueued;
+            return true;
+        }
     }
 
     /// <summary>
@@ -223,6 +227,13 @@ internal sealed class OcrFrameQueue : IDisposable
 
     public void Complete() => _channel.Writer.TryComplete();
 
+    public void ClearPending()
+    {
+        while (_channel.Reader.TryRead(out var frame))
+            frame.Dispose();
+        AllowResample();
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -243,7 +254,11 @@ internal sealed class OcrQueuedFrame : IDisposable
         string monitorName,
         Rectangle screenBounds,
         ulong fingerprint,
-        string? foregroundProcess)
+        string? foregroundProcess,
+        long epoch = 0,
+        IReadOnlyList<BufferedFrame>? recordFrames = null,
+        IReadOnlyList<BufferedFrame>? sequenceFrames = null,
+        PayAttention.Core.Models.OcrEvidence? ocrEvidence = null)
     {
         Bitmap = bitmap;
         Timestamp = timestamp;
@@ -252,6 +267,10 @@ internal sealed class OcrQueuedFrame : IDisposable
         ScreenBounds = screenBounds;
         Fingerprint = fingerprint;
         ForegroundProcess = foregroundProcess;
+        Epoch = epoch;
+        RecordFrames = recordFrames;
+        SequenceFrames = sequenceFrames;
+        OcrEvidence = ocrEvidence;
     }
 
     public Bitmap Bitmap { get; }
@@ -261,6 +280,11 @@ internal sealed class OcrQueuedFrame : IDisposable
     public Rectangle ScreenBounds { get; }
     public ulong Fingerprint { get; }
     public string? ForegroundProcess { get; }
+    public long Epoch { get; }
+    public IReadOnlyList<BufferedFrame>? RecordFrames { get; }
+    public IReadOnlyList<BufferedFrame>? SequenceFrames { get; }
+
+    public PayAttention.Core.Models.OcrEvidence? OcrEvidence { get; }
 
     public CapturedFrame ToCapturedFrame() => new()
     {
@@ -268,7 +292,11 @@ internal sealed class OcrQueuedFrame : IDisposable
         Timestamp = Timestamp,
         MonitorIndex = MonitorIndex,
         MonitorName = MonitorName,
-        ScreenBounds = ScreenBounds
+        ScreenBounds = ScreenBounds,
+        Epoch = Epoch,
+        RecordFrames = RecordFrames,
+        SequenceFrames = SequenceFrames,
+        OcrEvidence = OcrEvidence
     };
 
     public void Dispose() => Bitmap.Dispose();

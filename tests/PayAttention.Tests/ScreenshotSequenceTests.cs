@@ -74,7 +74,7 @@ public sealed class ScreenshotSequenceTests
     public void Retention_deletes_old_sequence_folders()
     {
         var root = Path.Combine(Path.GetTempPath(), "pa_ret_" + Guid.NewGuid().ToString("N"));
-        var folder = Path.Combine(root, "20260101_120000_000_test_sequence");
+        var folder = Path.Combine(root, PayAttention.Core.Services.CaptureOwnership.CreateName(DateTimeOffset.Now, "test", "sequence", Guid.NewGuid()));
         Directory.CreateDirectory(folder);
         File.WriteAllText(Path.Combine(folder, "t+000.jpg"), "x");
 
@@ -98,8 +98,8 @@ public sealed class ScreenshotSequenceTests
     {
         var root = Path.Combine(Path.GetTempPath(), "pa_ret_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
-        var newer = Path.Combine(root, "20260102_120000_000_err_record");
-        var older = Path.Combine(root, "20260101_120000_000_other_screenshot");
+        var newer = Path.Combine(root, PayAttention.Core.Services.CaptureOwnership.CreateName(DateTimeOffset.Now, "err", "record", Guid.NewGuid()));
+        var older = Path.Combine(root, PayAttention.Core.Services.CaptureOwnership.CreateName(DateTimeOffset.Now, "other", "screenshot", Guid.NewGuid()));
         File.WriteAllText(newer + ".jpg", "still");
         File.WriteAllText(newer + ".avi", "video");
         File.WriteAllText(newer + ".json", "{}");

@@ -13,7 +13,7 @@ namespace PayAttention.Harness;
 /// On-screen OCR harness.
 /// Modes: hard | stream | stream-long | dmesg | dmesg-long | many | scope-white |
 /// scope-black | pairwise N | fixture (child window only).
-/// Pairwise covers difficulty × scroll × speed × multi-pane × OCR × scope (8 cases).
+/// Pairwise covers difficulty × scroll × speed × multi-pane × OCR × scope (10 cases).
 /// </summary>
 internal static class Program
 {
@@ -51,6 +51,18 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 3 && args[0] == "inspect")
+        {
+            try
+            {
+                var config = System.Text.Json.JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(args[2]), JsonDefaults.Options)!;
+                MediaProof.Require(args[1], config);
+                Console.WriteLine("PASS: completed capture and saved pixels verified");
+                return 0;
+            }
+            catch (Exception ex) { Console.Error.WriteLine(ex.Message); return 1; }
+        }
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
@@ -73,7 +85,7 @@ internal static class Program
     /// <summary>
     /// Args:
     ///   [hard|stream|stream-long|dmesg|dmesg-long|scope-white|scope-black] [timeoutSec]
-    ///   pairwise N [timeoutSec]   (N = 1..8)
+    ///   pairwise N [timeoutSec]   (N = 1..10)
     ///   many [first|mid|last] [timeoutSec]
     ///   fixture --phrase TEXT --title TITLE --x N --y N --w N --h N [--easy] [--scroll MS]
     /// Legacy: [timeoutSec] → hard mode (keeps existing pytest invocation).
@@ -137,9 +149,9 @@ internal static class Program
 
         if (mode == "pairwise")
         {
-            if (args.Length < 2 || !int.TryParse(args[1], out pairwiseId) || pairwiseId is < 1 or > 8)
+            if (args.Length < 2 || !int.TryParse(args[1], out pairwiseId) || (pairwiseId < 1 || pairwiseId > PairwiseCases.Length))
             {
-                Console.Error.WriteLine("FAIL: usage: pairwise <1..8> [timeoutSec]");
+                Console.Error.WriteLine("FAIL: usage: pairwise <1..10> [timeoutSec]");
                 pairwiseId = 0;
             }
 
@@ -180,6 +192,8 @@ internal static class Program
         new(Easy: false, Scrolling: false, FastScroll: false, MultiPane: false, OcrMode: OcrSpeedMode.Thorough, WhitelistScope: false),
         // 8 hard, scroll, fast, multi, Fast, whitelist
         new(Easy: false, Scrolling: true, FastScroll: true, MultiPane: true, OcrMode: OcrSpeedMode.Fast, WhitelistScope: true),
+        new(Easy: true, Scrolling: true, FastScroll: true, MultiPane: false, OcrMode: OcrSpeedMode.Fast, WhitelistScope: true),
+        new(Easy: false, Scrolling: true, FastScroll: false, MultiPane: true, OcrMode: OcrSpeedMode.Thorough, WhitelistScope: false),
     ];
 
     private static int RunPairwise(int id, int timeoutSec)
@@ -233,6 +247,7 @@ internal static class Program
         var h = 280;
         var easy = false;
         var scrollMs = 0;
+        string? control = null;
         for (var i = 0; i < args.Length; i++)
         {
             static bool Next(ReadOnlySpan<string> a, int idx, out string value)
@@ -249,6 +264,10 @@ internal static class Program
 
             switch (args[i].ToLowerInvariant())
             {
+                case "--control" when Next(args, i, out var controlPath):
+                    control = controlPath;
+                    i++;
+                    break;
                 case "--phrase" when Next(args, i, out var p):
                     phrase = p;
                     i++;
@@ -283,7 +302,7 @@ internal static class Program
             }
         }
 
-        return new FixtureOptions(phrase, title, new Rectangle(x, y, w, h), easy, scrollMs);
+        return new FixtureOptions(phrase, title, new Rectangle(x, y, w, h), easy, scrollMs, control);
     }
 
     private sealed record FixtureOptions(
@@ -291,7 +310,8 @@ internal static class Program
         string Title,
         Rectangle Bounds,
         bool Easy,
-        int ScrollMs);
+        int ScrollMs,
+        string? ControlPath = null);
 
     private static int RunHardMode(int timeoutSec, HarnessOpts? opts = null)
     {
@@ -315,7 +335,7 @@ internal static class Program
         CaptureMonitor? monitor = null;
         Form? overlay = null;
         System.Windows.Forms.Timer? pollTimer = null;
-        var logger = new AppLogger(logDir);
+        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_VERBOSE") == "1" ? LogLevel.Verbose : Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
         string? shotPath = null;
         string? recPath = null;
         var started = DateTime.UtcNow;
@@ -341,6 +361,11 @@ internal static class Program
 
             void TryFinish(int code, string? detail = null)
             {
+                if (overlay is { InvokeRequired: true })
+                {
+                    overlay.BeginInvoke(new Action(() => TryFinish(code, detail)));
+                    return;
+                }
                 if (finished)
                     return;
                 finished = true;
@@ -379,7 +404,7 @@ internal static class Program
 
                 if (CapturesReady(shotPath, recPath))
                 {
-                    PrintPass(shotPath!, recPath!);
+                    PrintPass(shotPath!, recPath!, config);
                     TryFinish(0);
                     return;
                 }
@@ -454,7 +479,7 @@ internal static class Program
         TextBox? box = null;
         System.Windows.Forms.Timer? pollTimer = null;
         System.Windows.Forms.Timer? streamTimer = null;
-        var logger = new AppLogger(logDir);
+        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_VERBOSE") == "1" ? LogLevel.Verbose : Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
         string? shotPath = null;
         string? recPath = null;
         var started = DateTime.UtcNow;
@@ -496,6 +521,12 @@ internal static class Program
 
             void TryFinish(int code, string? detail = null)
             {
+                var owner = overlay ?? scrollOverlay;
+                if (owner is { InvokeRequired: true })
+                {
+                    owner.BeginInvoke(new Action(() => TryFinish(code, detail)));
+                    return;
+                }
                 if (finished)
                     return;
                 finished = true;
@@ -642,7 +673,7 @@ internal static class Program
                         return;
                     }
 
-                    PrintPass(shotPath!, recPath!);
+                    PrintPass(shotPath!, recPath!, config);
                     Console.WriteLine($"LATENCY shot={shotLatencyMs.Value}ms");
                     Console.WriteLine($"LATENCY rec={recLatencyMs.Value}ms");
                     TryFinish(0);
@@ -717,7 +748,7 @@ internal static class Program
         DmesgCanvas? canvas = null;
         System.Windows.Forms.Timer? pollTimer = null;
         System.Windows.Forms.Timer? streamTimer = null;
-        var logger = new AppLogger(logDir);
+        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_VERBOSE") == "1" ? LogLevel.Verbose : Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
         string? shotPath = null;
         string? recPath = null;
         var started = DateTime.UtcNow;
@@ -732,7 +763,7 @@ internal static class Program
 
         try
         {
-            overlay = CreateColoredConsoleOverlay("pay_attention_e2e_dmesg");
+            overlay = CreateColoredConsoleOverlay("pay_attention_e2e_dmesg", easy: opts?.Easy == true);
             canvas = overlay.Controls["dmesg"] as DmesgCanvas
                      ?? throw new InvalidOperationException("missing dmesg pane");
 
@@ -747,6 +778,11 @@ internal static class Program
 
             void TryFinish(int code, string? detail = null)
             {
+                if (overlay is { InvokeRequired: true })
+                {
+                    overlay.BeginInvoke(new Action(() => TryFinish(code, detail)));
+                    return;
+                }
                 if (finished)
                     return;
                 finished = true;
@@ -861,7 +897,7 @@ internal static class Program
                         return;
                     }
 
-                    PrintPass(shotPath!, recPath!);
+                    PrintPass(shotPath!, recPath!, config);
                     Console.WriteLine($"LATENCY shot={shotLatencyMs.Value}ms");
                     Console.WriteLine($"LATENCY rec={recLatencyMs.Value}ms");
                     TryFinish(0);
@@ -938,7 +974,7 @@ internal static class Program
         CaptureMonitor? monitor = null;
         Form? overlay = null;
         System.Windows.Forms.Timer? pollTimer = null;
-        var logger = new AppLogger(logDir);
+        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_VERBOSE") == "1" ? LogLevel.Verbose : Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
         string? shotPath = null;
         var started = DateTime.UtcNow;
         var finished = false;
@@ -957,6 +993,11 @@ internal static class Program
 
             void TryFinish(int code, string? detail = null)
             {
+                if (overlay is { InvokeRequired: true })
+                {
+                    overlay.BeginInvoke(new Action(() => TryFinish(code, detail)));
+                    return;
+                }
                 if (finished)
                     return;
                 finished = true;
@@ -992,15 +1033,16 @@ internal static class Program
                     return;
 
                 KeepOnTop(overlay);
-                shotPath ??= Directory.GetFiles(captureDir, "*_screenshot.*")
+                shotPath ??= Directory.GetFiles(captureDir, "*_screenshot.*").Where(IsStill)
                     .OrderByDescending(File.GetCreationTimeUtc)
                     .FirstOrDefault();
 
                 if (!badFire &&
                     shotPath is not null &&
                     File.Exists(shotPath) &&
-                    new FileInfo(shotPath).Length >= 100)
+                    MediaProof.Ready(shotPath))
                 {
+                    MediaProof.Require(shotPath!, config);
                     Console.WriteLine("PASS");
                     Console.WriteLine($"  screenshot: {shotPath} ({new FileInfo(shotPath).Length} bytes)");
                     TryFinish(0);
@@ -1086,18 +1128,48 @@ internal static class Program
         body.AppendLine("noise: end of pane");
 
         // Scroll fixtures need a vertical scrollbar so AppendText moves content off the top.
-        // Keep the hard (8.25pt) font when scrolling — large easy fonts + rapid AppendText
-        // often tear under PrintWindow/OCR on the blacklist per-window path.
+        // Difficulty remains independent of scrolling in the covering array.
         var form = CreateConsoleOverlay(
             "pay_attention_e2e_fixture_" + opts.Title,
             body.ToString(),
             scrollBars: opts.ScrollMs > 0,
-            easy: opts.Easy && opts.ScrollMs <= 0);
+            easy: opts.Easy);
         form.Text = opts.Title;
         form.Bounds = opts.Bounds;
         form.FormClosed += (_, _) => Application.ExitThread();
 
         System.Windows.Forms.Timer? scrollTimer = null;
+        System.Windows.Forms.Timer? controlTimer = null;
+        var lastScene = -1;
+        if (opts.ControlPath is not null)
+        {
+            controlTimer = new System.Windows.Forms.Timer { Interval = 50 };
+            controlTimer.Tick += (_, _) =>
+            {
+                if (!File.Exists(opts.ControlPath)) return;
+                try
+                {
+                    using var command = System.Text.Json.JsonDocument.Parse(File.ReadAllText(opts.ControlPath));
+                    var scene = command.RootElement.GetProperty("scene").GetInt32();
+                    if (scene == lastScene) return;
+                    form.Left = command.RootElement.GetProperty("x").GetInt32();
+                    if (form.Controls[0] is TextBox box)
+                    {
+                        box.Text = $"scene {scene}\r\nTOKEN>{opts.Phrase}<\r\n";
+                        box.Refresh();
+                    }
+                    form.Refresh();
+                    lastScene = scene;
+                    File.WriteAllText(opts.ControlPath + ".ack", scene.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    Console.WriteLine($"Fixture scene={scene} rendered bounds={form.Bounds}");
+                }
+                catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException)
+                {
+                    // A command is published atomically; retry transient filesystem contention.
+                }
+            };
+            controlTimer.Start();
+        }
         var scrollStep = 0;
         form.Shown += (_, _) =>
         {
@@ -1121,6 +1193,8 @@ internal static class Program
         {
             scrollTimer?.Stop();
             scrollTimer?.Dispose();
+            controlTimer?.Stop();
+            controlTimer?.Dispose();
         };
         Application.Run(form);
         return 0;
@@ -1146,7 +1220,7 @@ internal static class Program
         CaptureMonitor? monitor = null;
         System.Windows.Forms.Timer? pollTimer = null;
         Form? host = null;
-        var logger = new AppLogger(logDir);
+        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_VERBOSE") == "1" ? LogLevel.Verbose : Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
         var children = new List<Process>();
         var started = DateTime.UtcNow;
         var finished = false;
@@ -1215,6 +1289,11 @@ internal static class Program
 
             void TryFinish(int code, string? detail = null)
             {
+                if (host is { InvokeRequired: true })
+                {
+                    host.BeginInvoke(new Action(() => TryFinish(code, detail)));
+                    return;
+                }
                 if (finished)
                     return;
                 finished = true;
@@ -1261,7 +1340,7 @@ internal static class Program
                     if (phase == 0)
                     {
                         ActivateProcessMainWindow(children[0]);
-                        if (alphaPath is not null && File.Exists(alphaPath) && new FileInfo(alphaPath).Length >= 100)
+                        if (alphaPath is not null && File.Exists(alphaPath) && MediaProof.Ready(alphaPath))
                         {
                             if (betaPath is not null)
                             {
@@ -1277,10 +1356,12 @@ internal static class Program
                     else
                     {
                         ActivateProcessMainWindow(children[1]);
-                        if (betaPath is not null && File.Exists(betaPath) && new FileInfo(betaPath).Length >= 100)
+                        if (betaPath is not null && File.Exists(betaPath) && MediaProof.Ready(betaPath))
                         {
                             if (decoyFired)
                                 return;
+                            MediaProof.Require(alphaPath!, config);
+                            MediaProof.Require(betaPath!, config);
                             Console.WriteLine("PASS");
                             Console.WriteLine($"  alpha: {alphaPath}");
                             Console.WriteLine($"  beta:  {betaPath}");
@@ -1298,11 +1379,13 @@ internal static class Program
                     ActivateProcessMainWindow(children[0]);
                     if (alphaPath is not null && betaPath is not null &&
                         File.Exists(alphaPath) && File.Exists(betaPath) &&
-                        new FileInfo(alphaPath).Length >= 100 &&
-                        new FileInfo(betaPath).Length >= 100)
+                        MediaProof.Ready(alphaPath) &&
+                        MediaProof.Ready(betaPath))
                     {
                         if (decoyFired)
                             return;
+                        MediaProof.Require(alphaPath!, config);
+                        MediaProof.Require(betaPath!, config);
                         Console.WriteLine("PASS");
                         Console.WriteLine($"  alpha: {alphaPath}");
                         Console.WriteLine($"  beta:  {betaPath}");
@@ -1363,7 +1446,7 @@ internal static class Program
             try
             {
                 if (Directory.Exists(workDir))
-                    Directory.Delete(workDir, recursive: true);
+                    ArchiveEvidence(workDir);
             }
             catch
             {
@@ -1573,7 +1656,7 @@ internal static class Program
         var safe = new string(triggerText.Where(ch => char.IsLetterOrDigit(ch)).ToArray());
         if (safe.Length == 0)
             return null;
-        return Directory.GetFiles(captureDir, $"*{safe}*_screenshot.*")
+        return Directory.GetFiles(captureDir, $"*{safe}*_screenshot.*").Where(IsStill)
             .OrderByDescending(File.GetCreationTimeUtc)
             .FirstOrDefault();
     }
@@ -1584,6 +1667,22 @@ internal static class Program
             System.Runtime.InteropServices.DllImportSearchPath.System32)]
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [System.Runtime.InteropServices.DefaultDllImportSearchPaths(
+            System.Runtime.InteropServices.DllImportSearchPath.System32)]
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        public static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
+        [System.Runtime.InteropServices.DefaultDllImportSearchPaths(
+            System.Runtime.InteropServices.DllImportSearchPath.System32)]
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern IntPtr WindowFromPoint(Point point);
+
+        [System.Runtime.InteropServices.DefaultDllImportSearchPaths(
+            System.Runtime.InteropServices.DllImportSearchPath.System32)]
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
 
         [System.Runtime.InteropServices.DefaultDllImportSearchPaths(
             System.Runtime.InteropServices.DllImportSearchPath.System32)]
@@ -1802,7 +1901,7 @@ internal static class Program
     private sealed record DmesgEvent(string Line, string? Inject = null);
 
     /// <summary>White/red owner-drawn dmesg canvas (MobaXterm-style).</summary>
-    private static Form CreateColoredConsoleOverlay(string name)
+    private static Form CreateColoredConsoleOverlay(string name, bool easy = false)
     {
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
         var form = new Form
@@ -1818,7 +1917,7 @@ internal static class Program
             ShowInTaskbar = true
         };
 
-        form.Controls.Add(new DmesgCanvas { Name = "dmesg", Dock = DockStyle.Fill });
+        form.Controls.Add(new DmesgCanvas(easy) { Name = "dmesg", Dock = DockStyle.Fill });
         return form;
     }
 
@@ -2065,12 +2164,13 @@ internal static class Program
     private sealed class DmesgCanvas : Panel
     {
         private readonly List<string> _lines = [];
-        private readonly Font _font = new("Consolas", 9f, FontStyle.Regular);
+        private readonly Font _font;
         private const int MaxLines = 48;
         private const int Pad = 8;
 
-        public DmesgCanvas()
+        public DmesgCanvas(bool easy = false)
         {
+            _font = new Font("Consolas", easy ? 12f : 9f, FontStyle.Regular);
             DoubleBuffered = true;
             BackColor = DmesgBg;
             ResizeRedraw = true;
@@ -2138,6 +2238,8 @@ internal static class Program
         }
     }
 
+    private static DateTime _lastOcclusionLogUtc;
+
     private static void KeepOnTop(Form? overlay)
     {
         // Keep visible above other windows without stealing keyboard focus.
@@ -2145,12 +2247,24 @@ internal static class Program
         {
             overlay.TopMost = true;
             overlay.BringToFront();
+            // Reassert native Z-order even when WinForms' TopMost property is already
+            // true (a browser/video window may have moved above it since the last tick).
+            var raised = NativeMethods.SetWindowPos(overlay.Handle, new IntPtr(-1), 0, 0, 0, 0,
+                0x0001 | 0x0002 | 0x0010 | 0x0040); // NOSIZE | NOMOVE | NOACTIVATE | SHOWWINDOW
+            overlay.Refresh();
+            var center = new Point(overlay.Left + overlay.Width / 2, overlay.Top + overlay.Height / 2);
+            var covering = NativeMethods.GetAncestor(NativeMethods.WindowFromPoint(center), 2); // GA_ROOT
+            if ((!raised || covering != overlay.Handle) && DateTime.UtcNow - _lastOcclusionLogUtc > TimeSpan.FromSeconds(2))
+            {
+                _lastOcclusionLogUtc = DateTime.UtcNow;
+                Console.WriteLine($"Fixture visibility: raised={raised} bounds={overlay.Bounds} expected=0x{overlay.Handle:X} centerOwner=0x{covering:X} foreground={ScreenGrabber.GetForegroundProcessName()}");
+            }
         }
     }
 
     private static void FindCaptures(string captureDir, ref string? shotPath, ref string? recPath)
     {
-        shotPath ??= Directory.GetFiles(captureDir, "*_screenshot.*")
+        shotPath ??= Directory.GetFiles(captureDir, "*_screenshot.*").Where(IsStill)
             .OrderByDescending(File.GetCreationTimeUtc)
             .FirstOrDefault();
         recPath ??= Directory.GetFiles(captureDir, "*_record.avi")
@@ -2159,14 +2273,14 @@ internal static class Program
             .FirstOrDefault();
     }
 
-    private static bool CapturesReady(string? shotPath, string? recPath) =>
-        shotPath is not null && recPath is not null &&
-        File.Exists(shotPath) && File.Exists(recPath) &&
-        new FileInfo(shotPath).Length >= 100 &&
-        new FileInfo(recPath).Length >= 100;
+    private static bool IsStill(string path) => Path.GetExtension(path).ToLowerInvariant() is ".jpg" or ".jpeg" or ".png";
 
-    private static void PrintPass(string shotPath, string recPath)
+    private static bool CapturesReady(string? shotPath, string? recPath) => MediaProof.Ready(shotPath) && MediaProof.Ready(recPath);
+
+    private static void PrintPass(string shotPath, string recPath, AppConfig config)
     {
+        MediaProof.Require(shotPath, config);
+        MediaProof.Require(recPath, config);
         Console.WriteLine("PASS");
         Console.WriteLine($"  screenshot: {shotPath} ({new FileInfo(shotPath).Length} bytes)");
         Console.WriteLine($"  recording:  {recPath} ({new FileInfo(recPath).Length} bytes)");
@@ -2178,19 +2292,7 @@ internal static class Program
         Console.Error.WriteLine($"  screenshot: {(shotPath is null ? "missing" : shotPath)}");
         Console.Error.WriteLine($"  recording:  {(recPath is null ? "missing" : recPath)}");
         DumpDir(captureDir);
-        try
-        {
-            var harness = ApplicationScopeEvaluator.NormalizeProcessName(
-                System.Diagnostics.Process.GetCurrentProcess().ProcessName);
-            using var frame = ScreenGrabber.TryCaptureProcessWindows([harness]) ?? ScreenGrabber.CapturePrimary();
-            using var prep = ImageHelpers.PrepareForOcr(frame.Bitmap, 1920, 200, invertColors: true);
-            var ocrText = new OcrService().RecognizeAsync(prep).GetAwaiter().GetResult();
-            Console.Error.WriteLine($"  OCR sample: {(ocrText.Length > 500 ? ocrText[..500] : ocrText)}");
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine("  OCR sample failed: " + ex.Message);
-        }
+
     }
 
     private static void Cleanup(
@@ -2206,12 +2308,35 @@ internal static class Program
         try
         {
             if (Directory.Exists(workDir))
-                Directory.Delete(workDir, recursive: true);
+                ArchiveEvidence(workDir);
         }
         catch
         {
             Console.WriteLine($"Note: left work dir at {workDir}");
         }
+    }
+
+    private static void ArchiveEvidence(string workDir)
+    {
+        var targetRoot = Environment.GetEnvironmentVariable("PAY_ATTENTION_EVIDENCE");
+        if (string.IsNullOrWhiteSpace(targetRoot))
+        {
+            Console.WriteLine($"Evidence preserved: {workDir}");
+            return;
+        }
+        var source = Path.GetFullPath(workDir);
+        var temp = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!source.StartsWith(temp, StringComparison.OrdinalIgnoreCase) || !Path.GetFileName(source).StartsWith("pay_attention_e2e", StringComparison.Ordinal))
+            throw new InvalidOperationException("Unexpected harness evidence root");
+        var target = Path.Combine(targetRoot, Path.GetFileName(source));
+        foreach (var file in Directory.EnumerateFiles(source, "*", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint }))
+        {
+            var destination = Path.Combine(target, Path.GetRelativePath(source, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(file, destination, overwrite: true);
+        }
+        Console.WriteLine($"Evidence archived: {target}");
+        // The isolated source is retained too, so a failed copy never destroys evidence.
     }
 
     private static void DumpDir(string dir)

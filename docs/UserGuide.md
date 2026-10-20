@@ -22,7 +22,8 @@ Only one copy should run at a time.
 
 1. Find the tray icon near the clock (you may need **^**).
 2. Right-click:
-   - **Start** / **Stop** monitoring  
+   - **Start** / **Stop** monitoring
+   - **Pause monitoring** / **Resume monitoring**
    - **Settings…**  
    - **Optimize for this PC…** (optional; times OCR profiles on this machine)  
    - **Open captures folder**  
@@ -41,21 +42,21 @@ The Triggers and Applications sections in Settings can be collapsed (click the s
 - **Text** — string to look for  
 - **Match** — `contains` (usual), `exact`, or `regex` (invalid regex blocks Save)  
 - **Action** — Screenshot, Record, or Sequence  
-- **OCR** — `Thorough` (default) or `Fast` (see below)  
+- **OCR** — `Fast` (default) or `Thorough` (see below)
 - **Enabled** — only enabled rows fire  
 
 ### Choosing Thorough vs Fast
 
 | Mode | Use when | Trade-off |
 | --- | --- | --- |
-| **Thorough** (default) | Text stays on screen (logs, dialogs, dashboards) or is small / low-contrast / oddly punctuated | Runs more OCR passes (slower per frame, higher chance of a match) |
-| **Fast** | Text appears only briefly (fast-scrolling consoles, kernel dumps, flashing status lines) | Prefers fresh screen samples over exhausting every OCR fallback on one frame |
+| **Thorough** | Text stays on screen (logs, dialogs, dashboards) or is small / low-contrast / oddly punctuated | Runs more OCR passes (slower per frame, higher chance of a match) |
+| **Fast** (default) | Text appears only briefly (fast-scrolling consoles, kernel dumps, flashing status lines) | Prefers fresh screen samples over exhausting every OCR fallback on one frame |
 
 Use **Fast** for lines you expect to scroll away in about a second. Use **Thorough** for hard-to-read tokens that stay visible. You can mix modes across triggers: while only **Fast** triggers remain unmatched, OCR spends less time on fallbacks so fresh frames win; **Thorough** triggers keep the deeper multi-pass search. Each matching row still fires, including two rows that share a phrase but use different actions (Screenshot and Record). A hit is saved as soon as its pass matches, without waiting for later passes that are still looking for other triggers. After a finished search that already matched something, a static scene stays quiet briefly instead of re-scanning every grab — but if any enabled trigger is still unmatched, the same scene is OCR’d again about every **10 seconds** so sticky text is not ignored forever. A total miss is tried again immediately.
 
 Pair **Fast** with a shorter **OCR interval** (about 250–500 ms) when catching flash-by text.
 
-**Fast match threshold** (Capture settings, default **90%**) controls how closely OCR text must resemble a **Fast** trigger phrase. This is a similarity score against your trigger text—not a Windows OCR confidence value. **100%** is strictest (same idea as today’s matching); lower values are more reactive on garbled OCR but raise false positives. **Thorough** triggers ignore this slider.
+**Fast match threshold** (Capture settings, default **90%**) controls how closely OCR text must resemble a **Fast** trigger phrase. This is a similarity score against your trigger text, not a Windows OCR confidence value. **100%** requires a normalized exact match (confusable-character and punctuation normalization still apply); lower values are more reactive on garbled OCR but raise false positives. **Thorough** triggers ignore this slider.
 
 ### Writing triggers that OCR can read
 
@@ -79,7 +80,7 @@ Limit which processes OCR watches (process name, e.g. `firefox` or `PayAttention
 - **Prep** — per-app OCR prep overrides for adaptive / neon / gray / invert / terminal ROI (**Edit…**). Each pass can be **Inherit** (use Advanced globals), **Off**, **On**, or **Auto**. **Auto** samples that app’s colors and enables neon/terminal for dark neon UIs, adaptive (and invert when very dark) for low-contrast dark panes, and leaves bright UIs on baseline only.  
 - **Triggers** — dropdown: **All**, **Selected** (opens a multi-select picker), or **None**. Deleted triggers are dropped from associations automatically.
 
-Pause monitoring with the hotkey (default `Ctrl+Shift+P`) in Settings → Behavior.
+Pause or resume from the tray, or use the hotkey (default `Ctrl+Shift+P`) configured in Settings → Behavior. Pause invalidates pending OCR and stops sequence continuation. A file write already committed may finish. Stop and Exit wait for those writes without blocking the UI.
 
 **Application scope** (Capture section, default **All Minus Blacklisted Applications**):
 
@@ -91,7 +92,9 @@ By default **PayAttention** is a blacklist entry with triggers **None**: the set
 
 **Monitor** (when capture scope is Monitor): prefer **Primary** or **Specific**. **All** scans every display and is slower—especially with Fast OCR on multi-monitor setups.
 
-**Capture scope**: **Monitor** watches the chosen display(s). **Foreground window** only OCRs the focused app and needs that window to stay focused.
+**Capture scope**: **Monitor** watches the chosen display(s). **Foreground window** only OCRs the focused app and needs that window to stay focused. If that window cannot be captured, the sample is skipped. OCR always reads the frozen evidence image, including blacklist masks; it never re-grabs a live window while processing an older frame.
+
+Application trigger associations, debounce and prep overrides use the foreground application selected for the frame. In whitelist mode this can follow the topmost/sticky listed application when Windows focus is elsewhere. They do not establish which visible window supplied a particular OCR phrase; use one whitelisted application for strict association.
 
 ## Actions
 
@@ -103,7 +106,11 @@ By default **PayAttention** is a blacklist entry with triggers **None**: the set
 
 **Debounce** (default 30 s) limits how often the same trigger can fire when the screen *has* changed.
 
-If the screen is essentially **unchanged** (console left open), it will **not** re-fire even after debounce. Mouse movement usually does not count as a new scene. New lines or a different window can allow another capture.
+If the sampled screen content is **unchanged** (console left open), it will **not** re-fire even after debounce. New lines, a different window, blinking content or other visible changes can allow another capture after debounce. Failed saves release the pending trigger so the same scene can retry after the destination is repaired.
+
+Record FPS is a sampling target independent of OCR frequency; slower capture or encoding can reduce it. Pre-roll ends at the matched frame, even if OCR finishes later. AVI uses a fractional frame rate based on the actual sample timestamps; GIF uses frame delays. Neither promises a perfectly uniform timeline.
+
+Sequence post-images come from the same eligible, masked producer as pre-images. Offsets record actual sample times (`t+003_352.jpg` means +3.352 seconds), with no invented catch-up images or samples beyond the configured end time. Pause/Stop mark an interrupted sequence incomplete in its receipt. Sequence history keeps the before/after window plus up to 60 seconds of OCR lag; very late matches may have gaps. Large images and long history windows use more memory.
 
 ## Where files go
 
@@ -115,11 +122,15 @@ If the screen is essentially **unchanged** (console left open), it will **not** 
 | `captures\` | Output files |
 | `logs\` | App logs (can mention triggers/paths; auto-deleted after **5 days**) |
 
+Capture names contain a unique event ID. Each event has a lightweight completion receipt (`.capture.json`, or `capture.json` inside a sequence folder) with IDs, paths and completion state; receipts contain no OCR text. Optional debug sidecars are separate. A `.pending` marker means the event is still being written.
+
+Retention only deletes captures using the reserved `pa_<timestamp>_<event-id>_...` naming convention, including their companion files. It leaves legacy captures, unrelated files and linked directories alone. **Old captures from 1.5.2 and earlier need manual cleanup.** Maintenance runs every minute while the app is open, even while monitoring is stopped or paused; it skips active events.
+
 Change the capture folder in Settings. **Import…** / **Export…** copy settings between PCs; the capture path is not forced from the other machine (missing paths fall back to this PC’s default).
 
 ## Useful settings
 
-- **OCR interval** — capture period between grabs (default **500 ms**; try 250–500 with **Fast** OCR for brief messages)  
+- **OCR interval** — sampling interval for OCR, with recording allowed to sample faster (default **500 ms**; try 250–500 with **Fast** OCR for brief messages)
 - **Fast match threshold** — similarity for **Fast** triggers only (default **90%**; lower = looser)  
 - **Debounce** — min gap after a *changed* scene (default **30 s**; per-app debounce can override)  
 - **Application scope** — all / whitelisted / all minus blacklisted (default **all minus blacklisted**)  
@@ -145,14 +156,16 @@ OCR max width / upscale / invert / grayscale and the cascade knobs live under **
 Use this on the machine that will run Pay Attention (especially weaker corporate laptops). From the tray or **Settings → Advanced**:
 
 1. The app pauses monitoring if needed and shows two short test windows (plain black-on-white text and small neon-on-black text).
-2. Over about **10 seconds**, it times five profiles — **Very Low → Low → Balanced → High → Ultra** — three trials each, using this PC’s real screen capture and Windows OCR.
+2. Over about **10 seconds**, it times five profiles — **Very Low → Low → Balanced → High → Ultra** — three trials each, using this PC’s real screen capture and Windows OCR. Runtime varies by machine; this is not a deadline.
 3. It scores each profile on recognition quality (plain token, and neon when the cascade can read it) and cascade time vs that profile’s OCR interval. It prefers the **richest** profile that still hits the best quality while finishing within one interval. If neon never reads on any rung, it caps at **Balanced** so High/Ultra neon work is not enabled blindly. If the pick is still more than 2× its interval, it steps one rung leaner.
-4. Results fill the Advanced fields. Review them, then click **Save**. Nothing is written to disk until you save.
+4. Results fill the Advanced fields while preserving unsaved triggers, application associations and other form edits. Review them, then click **Save**. Nothing is written to disk until you save.
+
+This benchmark is a heuristic based on two small fixtures, not a throughput guarantee for a full desktop, many triggers, masking, recording or the writer queue. Validate your own workload after choosing a profile. Older `ocrMaxWindows` config values remain readable for compatibility, but frozen-frame OCR no longer imposes a per-window cap.
 
 | Profile | Typical use |
 | --- | --- |
 | **Ultra** | Fast desktops — full cascade (500 ms, all passes); uncalibrated default |
-| **High** | Strong laptops — adaptive on, neon pass off, fewer windows |
+| **High** | Strong laptops — adaptive on, neon pass off, fewer terminal regions |
 | **Balanced** | Mid-range — between High and Low |
 | **Low** | Older machines — ~1 s interval, baseline + one terminal ROI |
 | **Very Low** | Weakest lab PCs — baseline only, longest interval, background priority |
