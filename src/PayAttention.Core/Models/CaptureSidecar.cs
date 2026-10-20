@@ -14,4 +14,5 @@ public sealed class CaptureSidecar
     public int MonitorIndex { get; set; }
     public string MonitorName { get; set; } = string.Empty;
     public string OcrSnippet { get; set; } = string.Empty;
+    public OcrEvidence? OcrEvidence { get; set; }
 }

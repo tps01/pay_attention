@@ -41,6 +41,8 @@ internal sealed class OcrFrameQueue : IDisposable
     private string? _lastEnqueuedForeground;
     private DateTimeOffset? _forceResampleAfterUtc;
     private bool _disposed;
+    private long _droppedOldest;
+    public long DroppedOldest => Interlocked.Read(ref _droppedOldest);
 
     public OcrFrameQueue(int capacity = DefaultCapacity)
     {
@@ -112,12 +114,14 @@ internal sealed class OcrFrameQueue : IDisposable
                 foregroundProcess,
                 frame.Epoch,
                 frame.RecordFrames,
-                frame.SequenceFrames);
+                frame.SequenceFrames,
+                frame.OcrEvidence);
 
             while (!_channel.Writer.TryWrite(queued))
             {
                 if (_channel.Reader.TryRead(out var oldest))
                 {
+                    Interlocked.Increment(ref _droppedOldest);
                     oldest.Dispose();
                     continue;
                 }
@@ -253,7 +257,8 @@ internal sealed class OcrQueuedFrame : IDisposable
         string? foregroundProcess,
         long epoch = 0,
         IReadOnlyList<BufferedFrame>? recordFrames = null,
-        IReadOnlyList<BufferedFrame>? sequenceFrames = null)
+        IReadOnlyList<BufferedFrame>? sequenceFrames = null,
+        PayAttention.Core.Models.OcrEvidence? ocrEvidence = null)
     {
         Bitmap = bitmap;
         Timestamp = timestamp;
@@ -265,6 +270,7 @@ internal sealed class OcrQueuedFrame : IDisposable
         Epoch = epoch;
         RecordFrames = recordFrames;
         SequenceFrames = sequenceFrames;
+        OcrEvidence = ocrEvidence;
     }
 
     public Bitmap Bitmap { get; }
@@ -278,6 +284,8 @@ internal sealed class OcrQueuedFrame : IDisposable
     public IReadOnlyList<BufferedFrame>? RecordFrames { get; }
     public IReadOnlyList<BufferedFrame>? SequenceFrames { get; }
 
+    public PayAttention.Core.Models.OcrEvidence? OcrEvidence { get; }
+
     public CapturedFrame ToCapturedFrame() => new()
     {
         Bitmap = Bitmap,
@@ -287,7 +295,8 @@ internal sealed class OcrQueuedFrame : IDisposable
         ScreenBounds = ScreenBounds,
         Epoch = Epoch,
         RecordFrames = RecordFrames,
-        SequenceFrames = SequenceFrames
+        SequenceFrames = SequenceFrames,
+        OcrEvidence = OcrEvidence
     };
 
     public void Dispose() => Bitmap.Dispose();

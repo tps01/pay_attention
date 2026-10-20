@@ -51,16 +51,20 @@ def require_live_execution() -> None:
 
 
 def evidence_dir() -> Path:
-    cached = _STATE.get("evidence")
-    if isinstance(cached, Path):
-        return cached
+    """Per-test evidence root.
+
+    Suite slots share this module, and Colosseum renames a slot directory when
+    the slot ends. A path cached from an earlier slot is gone by the next test.
+    """
     try:
         output = get_context().output_dir
     except RuntimeError:
         output = None
-    root = (Path(output) if output else REPO_ROOT / "artifacts" / "colosseum") / (
-        "evidence-" + uuid.uuid4().hex
-    )
+    base = Path(output) if output else REPO_ROOT / "artifacts" / "colosseum"
+    cached = _STATE.get("evidence")
+    if isinstance(cached, Path) and cached.is_dir() and cached.parent == base:
+        return cached
+    root = base / ("evidence-" + uuid.uuid4().hex)
     root.mkdir(parents=True, exist_ok=True)
     _STATE["evidence"] = root
     return root
@@ -95,7 +99,7 @@ def run_harness(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env={**os.environ, "PAY_ATTENTION_EVIDENCE": str(root)},
+        env={**os.environ, "PAY_ATTENTION_EVIDENCE": str(root), "PAY_ATTENTION_HARNESS_VERBOSE": "1"},
     )
     try:
         stdout, stderr = proc.communicate(timeout=timeout_sec)
@@ -225,7 +229,7 @@ def seed_screenshot_config(
         "retentionMaxAgeDays": 0,
         "retentionMaxFiles": 0,
         "pauseHotkey": "Ctrl+Shift+P",
-        "logLevel": "debug",
+        "logLevel": "verbose",
     }
     write_config(config)
     return config
@@ -263,7 +267,7 @@ def write_gui_config(
             "desktop_id = 2",
             'driver = "flaui"',
             f'exe = "{_toml_path(harness_exe())}"',
-            f'args = "{fixture_args}"',
+            f'args = {json.dumps(fixture_args)}',
             f'title = "{fixture_title}"',
             "timeout_s = 30",
             "",
@@ -302,9 +306,24 @@ def load_gui() -> Path:
     return cfg
 
 
+def release_desktop() -> None:
+    """Close FlaUI-launched windows and any monitor this suite still tracks."""
+    try:
+        from colosseum_gui.connections import close_all
+
+        close_all()
+    except Exception:  # noqa: BLE001
+        pass
+    stop_tracked_processes()
+
+
 def start_monitor_process() -> subprocess.Popen[str]:
     """Launch PayAttention.exe --start with isolated appdata (no window)."""
     require_live_execution()
+    # Failed slots return before their own cleanup. The suite process keeps
+    # that Popen, so a second launch hits the single-instance mutex and shows
+    # "already running (check the system tray)". Leave fixture processes alone.
+    stop_app_processes()
     env = {
         **os.environ,
         "PAY_ATTENTION_APPDATA": str(appdata()),
@@ -324,21 +343,48 @@ def start_monitor_process() -> subprocess.Popen[str]:
     return proc
 
 
+def _is_app_process(proc: subprocess.Popen[str]) -> bool:
+    args = proc.args
+    app = str(app_exe())
+    if isinstance(args, str):
+        return app in args
+    return bool(args) and str(args[0]) == app
+
+
+def _stop_process(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def stop_app_processes() -> None:
+    """Stop PayAttention.exe copies tracked by this suite. Fixtures stay up."""
+    require_live_execution()
+    procs = _STATE.get("procs")
+    if not isinstance(procs, list):
+        return
+    kept: list[object] = []
+    for proc in procs:
+        if isinstance(proc, subprocess.Popen) and _is_app_process(proc):
+            _stop_process(proc)
+            continue
+        kept.append(proc)
+    procs[:] = kept
+
+
 def stop_tracked_processes() -> None:
     require_live_execution()
     procs = _STATE.get("procs")
     if not isinstance(procs, list):
         return
     for proc in procs:
-        if not isinstance(proc, subprocess.Popen):
-            continue
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
+        if isinstance(proc, subprocess.Popen):
+            _stop_process(proc)
     procs.clear()
 
 
@@ -398,6 +444,7 @@ def wait_for_new_capture(
     suffix: str = "_screenshot",
     timeout_s: float = CAPTURE_BUDGET_S,
     trigger_text: str | None = None,
+    prove_pixels: bool = True,
 ) -> Path | None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -405,7 +452,7 @@ def wait_for_new_capture(
             if (
                 path.name not in before
                 and (not suffix or suffix in path.name.lower())
-                and completed_capture(path, trigger_text=trigger_text)
+                and completed_capture(path, trigger_text=trigger_text, prove_pixels=prove_pixels)
             ):
                 return path
         time.sleep(0.1)

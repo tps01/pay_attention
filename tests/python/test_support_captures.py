@@ -4,6 +4,7 @@ import importlib
 import json
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -69,6 +70,39 @@ def test_content_proof_failure_cannot_pass(tmp_path, monkeypatch):
     )
     with pytest.raises(AssertionError, match="content proof failed"):
         support.completed_capture(path)
+
+
+def test_wait_can_defer_pixel_proof_until_after_timing_checks(tmp_path, monkeypatch):
+    path = setup_capture(tmp_path)
+    monkeypatch.setattr(support, "run_harness", lambda *a, **k: pytest.fail("Pixel proof ran during timing"))
+    assert support.wait_for_new_capture(set(), prove_pixels=False) == path
+
+
+def test_fixture_control_path_with_spaces_survives_generated_toml(tmp_path):
+    args = 'fixture --control "C:/Test Folder/scene.json"'
+    path = support.write_gui_config(tmp_path / "gui.toml", fixture_args=args)
+    config = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert config["gui"]["desktop"][1]["args"] == args
+
+
+def test_pairwise_attempts_every_case_after_failures(monkeypatch):
+    module = importlib.import_module("test_pairwise")
+    monkeypatch.setattr(module, "ensure_built", lambda: None)
+    outcomes = []
+    monkeypatch.setattr(module, "verify_pairwise_outcome", lambda **outcome: outcomes.append(outcome))
+    seen = []
+
+    def run(case_id, kind):
+        seen.append(case_id)
+        if case_id in {2, 5}:
+            raise AssertionError(f"case {case_id} failed")
+
+    monkeypatch.setattr(module, "_run_case", run)
+    with pytest.raises(AssertionError, match="case 2 failed") as error:
+        module.main()
+    assert "case 5 failed" in str(error.value)
+    assert seen == list(range(1, 11))
+    assert [result["key"] for result in outcomes if not result["passed"]] == ["pairwise_2", "pairwise_5"]
 
 
 def test_unrelated_trigger_receipt_cannot_pass(tmp_path):

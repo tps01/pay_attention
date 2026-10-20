@@ -21,6 +21,7 @@ public sealed class OcrService
     }
 
     public bool IsAvailable => _engine is not null;
+    public string LanguageTag => _engine?.RecognizerLanguage.LanguageTag ?? "unavailable";
 
     public async Task<string> RecognizeAsync(Bitmap bitmap, CancellationToken cancellationToken = default)
     {

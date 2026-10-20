@@ -31,6 +31,7 @@ public sealed class CaptureMonitor : IDisposable
     private readonly object _configLock = new();
 
     private const int DebugOcrSnippetMaxChars = 500;
+    private string _diagnosticFrame = "none";
     private static readonly TimeSpan EnqueueSkipLogInterval = TimeSpan.FromSeconds(30);
 
     private readonly object _lifecycleLock = new();
@@ -149,7 +150,13 @@ public sealed class CaptureMonitor : IDisposable
             RaiseStatus("Monitoring", "OCR monitoring started.");
             _logger.Info(
                 $"Monitoring started (queue={queueCapacity}, backgroundPriority={backgroundPriority}).");
-            if (_logger.MinLevel == LogLevel.Debug)
+            if (_logger.IsVerboseEnabled)
+            {
+                var diagnostic = new OcrEvidence();
+                diagnostic.SaveSettings(_config, null);
+                _logger.Verbose($"Session epoch={_captureEpoch} build={typeof(CaptureMonitor).Assembly.GetName().Version} runtime={Environment.Version} ocr={_services.OcrDescription} scope={_config.ApplicationScope} capture={_config.CaptureScope}/{_config.MonitorSelection} settings={JsonSerializer.Serialize(diagnostic.Settings)} triggerIds=[{string.Join(",", _config.Triggers.Where(t => t.Enabled).Select(t => t.Id))}]");
+            }
+            if (_logger.IsDebugEnabled)
             {
                 _logger.Info(
                     $"Debug logging on (OCR snippets in logs). Log folder: {_logger.LogDirectory}. " +
@@ -331,7 +338,10 @@ public sealed class CaptureMonitor : IDisposable
                             frame.Epoch = epoch;
                             var masks = ApplicationScopeEvaluator.GetBlacklistProcessNamesToMask(config);
                             if (masks.Count > 0)
-                                _services.Mask(frame, masks);
+                            {
+                                var masked = _services.Mask(frame, masks);
+                                _logger.Verbose($"Capture epoch={epoch} timestamp={frame.Timestamp:O} maskedWindows={masked}");
+                            }
                             // All evidence, including sequence continuation, comes through this policy path.
                             lock (_lifecycleLock)
                             {
@@ -342,6 +352,7 @@ public sealed class CaptureMonitor : IDisposable
                                     if (frame.Timestamp - lastOcrSample >= TimeSpan.FromMilliseconds(config.OcrIntervalMs))
                                     {
                                         lastOcrSample = frame.Timestamp;
+                                        frame.OcrEvidence = DescribeEvidence(frame, config, foregroundProcess);
                                         frame.RecordFrames = record ? _ringBuffer.SnapshotAt(frame.Timestamp, TimeSpan.FromSeconds(config.RecordBufferSeconds)) : null;
                                         frame.SequenceFrames = sequence ? _sequenceRing.SnapshotAt(frame.Timestamp, TimeSpan.FromSeconds(config.SequenceBeforeSeconds)) : null;
                                         var hashStart = Stopwatch.GetTimestamp();
@@ -350,6 +361,7 @@ public sealed class CaptureMonitor : IDisposable
                                         var hamming = queue.HammingVsLastEnqueued(fingerprint);
                                         var enqueued = queue.TryEnqueueIfChanged(frame, foregroundProcess, fingerprint, out var decision, _profiler, _logger);
                                         LogEnqueueDecision(decision, enqueued, fingerprint, hamming, foregroundProcess);
+                                        _logger.Verbose($"Queue epoch={epoch} timestamp={frame.Timestamp:O} fp={fingerprint:X16} decision={decision} pending={queue.PendingCount} droppedOldest={queue.DroppedOldest}");
                                     }
                                 }
                             }
@@ -394,11 +406,14 @@ public sealed class CaptureMonitor : IDisposable
                 if (!IsCurrent(queued.Epoch))
                     continue;
                 var captured = queued.ToCapturedFrame();
+                captured.OcrEvidence?.SaveSettings(config, ApplicationScopeEvaluator.FindMatchingRow(config, queued.ForegroundProcess));
+                _logger.Verbose($"OCR frame={queued.Timestamp:O}/{queued.Epoch}/{queued.Fingerprint:X16} ageMs={(DateTimeOffset.UtcNow - queued.Timestamp).TotalMilliseconds:F0} pending={queue.PendingCount} bounds={queued.ScreenBounds} scope={config.ApplicationScope}");
                 var claims = new Dictionary<Guid, Guid>();
 
                 var foregroundProcess = queued.ForegroundProcess;
                 var published = new HashSet<Guid>();
                 var lastLoggedOcrLen = -1;
+                TimeSpan? debounceRetry = null;
                 void PublishMatches(
                     string ocrText,
                     IReadOnlyList<TriggerMatchResult> matches,
@@ -432,6 +447,10 @@ public sealed class CaptureMonitor : IDisposable
                         _logger.Debug(
                             $"Trigger '{match.Trigger.Text}' suppressed ({FormatSuppressReason(suppressReason)}; " +
                             $"matched '{match.MatchedPortion}', fp=0x{queued.Fingerprint:X16}).");
+                        if (suppressReason == FireSuppressReason.Debounce &&
+                            _fireGate.TimeUntilRetry(key, debounce) is TimeSpan wait &&
+                            (debounceRetry is null || wait < debounceRetry))
+                            debounceRetry = wait;
                         return false;
                     });
 
@@ -526,6 +545,11 @@ public sealed class CaptureMonitor : IDisposable
                         $"Resample: quiet (allMatched={allMatched}, anyForQuiet={anyForQuiet}, " +
                         $"cutShort={ocr.CutShortForBacklog}, pending={pending}).");
                 }
+
+                // A hit during debounce must be sampled again when the timer ends.
+                // Quiet mode would otherwise wait for a pixel change that may never come.
+                if (debounceRetry is TimeSpan retryAt)
+                    queue.ScheduleResample(retryAt + TimeSpan.FromMilliseconds(200));
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -548,7 +572,7 @@ public sealed class CaptureMonitor : IDisposable
         string? foregroundProcess,
         IEnumerable<string>? runningWhitelist)
     {
-        if (_logger.MinLevel != LogLevel.Debug)
+        if (!_logger.IsDebugEnabled)
             return;
 
         var reason = config.ApplicationScope switch
@@ -573,7 +597,7 @@ public sealed class CaptureMonitor : IDisposable
         int? hamming,
         string? foregroundProcess)
     {
-        if (_logger.MinLevel != LogLevel.Debug)
+        if (!_logger.IsDebugEnabled)
             return;
 
         if (decision == OcrEnqueueDecision.SkippedUnchanged)
@@ -610,7 +634,7 @@ public sealed class CaptureMonitor : IDisposable
         string? foregroundProcess,
         IReadOnlyList<TriggerMatchResult> found)
     {
-        if (_logger.MinLevel != LogLevel.Debug)
+        if (!_logger.IsDebugEnabled)
             return;
 
         var allowed = OcrCascadePolicy.EnabledTriggers(config)
@@ -727,17 +751,48 @@ public sealed class CaptureMonitor : IDisposable
     private static string JoinChunks(List<string> chunks) =>
         string.Join("\n", chunks.Where(s => !string.IsNullOrWhiteSpace(s)));
 
-    // Offline evidence verification follows the same frozen-image OCR cascade as monitoring.
-    internal async Task<bool> VerifySavedImageAsync(Bitmap bitmap, TriggerConfig trigger)
+    private OcrEvidence DescribeEvidence(CapturedFrame frame, AppConfig config, string? processName)
     {
-        var config = new AppConfig { Triggers = [trigger], ApplicationScope = ApplicationScopeMode.All };
+        var evidence = new OcrEvidence { ScreenX = frame.ScreenBounds.X, ScreenY = frame.ScreenBounds.Y };
+        evidence.SaveSettings(config, ApplicationScopeEvaluator.FindMatchingRow(config, processName));
+        if (frame.Bitmap.Width >= 900 && frame.Bitmap.Height >= 600)
+        {
+            try
+            {
+                var windows = _services.WindowBounds(config);
+                evidence.Windows = ImageHelpers.SelectFrozenWindowCrops(windows, frame.ScreenBounds,
+                        frame.Bitmap.Width, frame.Bitmap.Height, config.OcrMaxWindows)
+                    .Select(r => new OcrRegion(r.X, r.Y, r.Width, r.Height)).ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug($"Capture-time window enumeration failed; keeping full-frame OCR: {ex.Message}");
+            }
+        }
+        if (config.CaptureScope == CaptureScope.Monitor && config.MonitorSelection == MonitorSelection.All)
+            evidence.Monitors = ScreenGrabber.GetMonitors().Select(m =>
+                Rectangle.Intersect(frame.ScreenBounds, m.Bounds)).Where(r => r.Width > 0 && r.Height > 0)
+                .Select(r => new OcrRegion(r.X - frame.ScreenBounds.X, r.Y - frame.ScreenBounds.Y, r.Width, r.Height)).ToList();
+        return evidence;
+    }
+
+    // Legacy receipts use an image-only search; neither path consults the live desktop.
+    internal async Task<bool> VerifySavedImageAsync(Bitmap bitmap, TriggerConfig trigger, OcrEvidence? evidence = null)
+    {
+        var config = evidence?.ReplayConfig(trigger) ?? new AppConfig
+        {
+            Triggers = [trigger], ApplicationScope = ApplicationScopeMode.All,
+            OcrApplyBudgetWhenIdle = false
+        };
         using var frame = new CapturedFrame
         {
-            Bitmap = (Bitmap)bitmap.Clone(),
-            Timestamp = DateTimeOffset.UtcNow,
-            ScreenBounds = new Rectangle(0, 0, bitmap.Width, bitmap.Height)
+            Bitmap = (Bitmap)bitmap.Clone(), Timestamp = DateTimeOffset.UtcNow,
+            ScreenBounds = new Rectangle(evidence?.ScreenX ?? 0, evidence?.ScreenY ?? 0, bitmap.Width, bitmap.Height),
+            OcrEvidence = evidence
         };
-        var result = await RecognizeFrameAsync(config, frame, CancellationToken.None).ConfigureAwait(false);
+        _logger.Verbose($"Evidence replay version={evidence?.Version.ToString() ?? "legacy"} bounds={frame.ScreenBounds} windows={evidence?.Windows.Count ?? 0}");
+        var result = await RecognizeFrameAsync(config, frame, CancellationToken.None,
+            processName: "evidence-replay").ConfigureAwait(false);
         return result.MatchedIds.Contains(trigger.Id);
     }
 
@@ -750,16 +805,20 @@ public sealed class CaptureMonitor : IDisposable
         string? processName = null,
         ulong fingerprint = 0)
     {
+        _diagnosticFrame = $"{frame.Timestamp:O}/{frame.Epoch}/{fingerprint:X16}";
         pendingBehind ??= static () => 0;
         var cascadeClock = Stopwatch.StartNew();
         var cascade = new CascadeContext(
             config, cascadeClock, pendingBehind, _profiler, _logger,
             processName: processName, fingerprint: fingerprint);
 
-        if (config.CaptureScope == CaptureScope.Monitor &&
-            config.MonitorSelection == MonitorSelection.All)
+        if (await RecognizeFrozenWindowCropsAsync(frame, cascade, token, onText).ConfigureAwait(false)
+            is { } windows)
+            return windows;
+
+        if (frame.OcrEvidence?.Monitors.Count > 1)
         {
-            var monitors = ScreenGrabber.GetMonitors();
+            var monitors = frame.OcrEvidence?.Monitors ?? [];
             if (monitors.Count > 1)
             {
                 var parts = new List<string>(monitors.Count);
@@ -781,7 +840,8 @@ public sealed class CaptureMonitor : IDisposable
                     // Crop from the queued virtual-desktop frame — never live re-grab, so
                     // match text and the saved screenshot share the same frozen moment.
                     using var slice = ImageHelpers.CropAbsoluteRegion(
-                        frame.Bitmap, frame.ScreenBounds, monitor.Bounds);
+                        frame.Bitmap, new Rectangle(0, 0, frame.Bitmap.Width, frame.Bitmap.Height),
+                        new Rectangle(monitor.X, monitor.Y, monitor.Width, monitor.Height));
                     if (slice is null)
                         continue;
 
@@ -799,6 +859,64 @@ public sealed class CaptureMonitor : IDisposable
         }
 
         return await RecognizeBitmapMultiPassAsync(frame.Bitmap, cascade, token, onText).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// OCR small visible windows cropped from the frozen frame before the full-monitor
+    /// cascade. A playing video makes the whole display one noisy image and Windows OCR
+    /// drops the fixture line. Crops are pixels from <paramref name="frame"/>, never a
+    /// later live grab. Unmatched triggers still fall through to the full frame.
+    /// </summary>
+    private async Task<OcrFrameResult?> RecognizeFrozenWindowCropsAsync(
+        CapturedFrame frame,
+        CascadeContext cascade,
+        CancellationToken token,
+        Action<string, IReadOnlyList<TriggerMatchResult>>? onText)
+    {
+        var bitmap = frame.Bitmap;
+        if (bitmap.Width < 900 || bitmap.Height < 600)
+            return null;
+
+        var crops = frame.OcrEvidence?.Windows ?? [];
+        if (crops.Count == 0)
+            return null;
+
+        _logger.Debug($"OCR windows: {crops.Count} frozen crops before the full frame.");
+        var chunks = new List<string>(crops.Count);
+        var scale = PassUpscale(cascade.Config, 200);
+        // Fair first round: every candidate receives a baseline before deep searches.
+        foreach (var region in crops)
+        {
+            token.ThrowIfCancellationRequested();
+            var rect = new Rectangle(region.X, region.Y, region.Width, region.Height);
+            if (!new Rectangle(0, 0, bitmap.Width, bitmap.Height).Contains(rect) || rect.Width < 1 || rect.Height < 1)
+                throw new InvalidOperationException("OCR evidence crop lies outside the saved image");
+            _logger.Verbose($"OCR crop frame={frame.Timestamp:O} bounds={rect} round=baseline");
+            using var crop = bitmap.Clone(rect, bitmap.PixelFormat);
+            await AddOcrPassAsync(chunks, crop, cascade.Config, scale, false, OcrPrepMode.None, "ocr.window", token)
+                .ConfigureAwait(false);
+            FinishPassIfDone(chunks, cascade, onText);
+            if (cascade.Match.AllInScopeMatched())
+                return ToFrameResult(JoinChunks(chunks), false, cascade.Match);
+        }
+
+        // Each window has a fresh bounded budget; activity elsewhere cannot starve it.
+        foreach (var region in crops)
+        {
+            var rect = new Rectangle(region.X, region.Y, region.Width, region.Height);
+            using var crop = bitmap.Clone(rect, bitmap.PixelFormat);
+            var windowCascade = new CascadeContext(cascade.Config, Stopwatch.StartNew(),
+                cascade.ProcessName == "evidence-replay" ? () => 0 : () => 1, _profiler, _logger, cascade.Match, cascade.ProcessName, cascade.Fingerprint,
+                budgetLimitMs: Math.Max(100, cascade.Config.OcrCascadeBudgetThoroughMs / crops.Count));
+            _logger.Verbose($"OCR crop frame={frame.Timestamp:O} bounds={rect} round=deep");
+            var part = await RecognizeBitmapMultiPassAsync(crop, windowCascade, token, onText).ConfigureAwait(false);
+            chunks.Add(part.Text);
+            if (cascade.Match.AllInScopeMatched())
+                return ToFrameResult(JoinChunks(chunks), false, cascade.Match);
+        }
+        // Crop work must not spend the full-frame fallback's budget.
+        cascade.Clock.Restart();
+        return null;
     }
 
     private async Task<OcrFrameResult> RecognizeBitmapMultiPassAsync(
@@ -827,6 +945,29 @@ public sealed class CaptureMonitor : IDisposable
         if (await RunPassAsync(config.OcrUpscalePercent, invert: false, OcrPrepMode.None, "ocr.baseline")
                 .ConfigureAwait(false) is { } baseline)
             return baseline;
+
+        // Windows OCR can omit token-only rows when adjacent timestamp/noise rows dominate.
+        // Small panes get line isolation before the full-image preprocessing cascade.
+        if (prep.Terminal && bitmap.Width <= 1200 && bitmap.Height <= 900)
+        {
+            foreach (var rect in ImageHelpers.FindTerminalTextLines(bitmap, Math.Min(12, config.OcrTerminalMaxRegions * 3)))
+            {
+                if (ObserveAndShouldStop(chunks, cascade)) break;
+                using var line = bitmap.Clone(rect, bitmap.PixelFormat);
+                await AddOcrPassAsync(chunks, line, config, PassUpscale(config, 300), true,
+                    OcrPrepMode.AdaptiveContrast, $"ocr.line@{rect.X},{rect.Y},{rect.Width},{rect.Height}", token).ConfigureAwait(false);
+                if (FinishPassIfDone(chunks, cascade, onText) is { } foundLine) return foundLine;
+                // A trailing isolated delimiter can make Windows OCR reject the entire
+                // token row. Keep the full-line result and also try without that glyph.
+                if (ImageHelpers.TrimTerminalLineEnding(line) is { } trimmedRect)
+                {
+                    using var trimmed = line.Clone(trimmedRect, line.PixelFormat);
+                    await AddOcrPassAsync(chunks, trimmed, config, PassUpscale(config, 300), true,
+                        OcrPrepMode.AdaptiveContrast, "ocr.line-trim", token).ConfigureAwait(false);
+                    if (FinishPassIfDone(chunks, cascade, onText) is { } trimmedLine) return trimmedLine;
+                }
+            }
+        }
 
         // Adaptive stretch → invert (dark-terminal / low-contrast boost).
         if (prep.Adaptive)
@@ -897,7 +1038,10 @@ public sealed class CaptureMonitor : IDisposable
         if (cascade.Match.AllInScopeMatched())
             return ToFrameResult(joined, cutShort: false, cascade.Match);
         if (IsCascadeOverBudget(cascade))
+        {
+            cascade.Logger.Verbose($"OCR budget cutoff elapsedMs={cascade.Clock.ElapsedMilliseconds} pending={cascade.PendingBehind} matched=[{string.Join(",", cascade.Match.MatchedIds)}]");
             return ToFrameResult(joined, cutShort: true, cascade.Match);
+        }
         return null;
     }
 
@@ -996,22 +1140,27 @@ public sealed class CaptureMonitor : IDisposable
             AppLogger logger,
             CascadeMatchState? match = null,
             string? processName = null,
-            ulong fingerprint = 0)
+            ulong fingerprint = 0,
+            int? budgetLimitMs = null)
         {
             Config = config;
+            Logger = logger;
             Clock = clock;
             _pendingBehind = pendingBehind;
             Match = match ?? new CascadeMatchState(
                 config, config.FastMatchThresholdPercent, profiler, logger, processName);
             ProcessName = processName;
             Fingerprint = fingerprint;
+            BudgetLimitMs = budgetLimitMs;
         }
 
+        public AppLogger Logger { get; }
         public AppConfig Config { get; }
         public Stopwatch Clock { get; }
         public CascadeMatchState Match { get; }
         public string? ProcessName { get; }
         public ulong Fingerprint { get; }
+        public int? BudgetLimitMs { get; }
         /// <summary>Frames waiting behind the one currently being OCR'd (re-read each check).</summary>
         public int PendingBehind => _pendingBehind();
         public int FastMatchThresholdPercent => Config.FastMatchThresholdPercent;
@@ -1026,9 +1175,9 @@ public sealed class CaptureMonitor : IDisposable
 
     private static TimeSpan CascadeBudgetFor(CascadeContext cascade) =>
         TimeSpan.FromMilliseconds(
-            cascade.Match.UnmatchedAreAllFast()
+            Math.Min(cascade.BudgetLimitMs ?? int.MaxValue, cascade.Match.UnmatchedAreAllFast()
                 ? cascade.Config.OcrCascadeBudgetFastMs
-                : cascade.Config.OcrCascadeBudgetThoroughMs);
+                : cascade.Config.OcrCascadeBudgetThoroughMs));
 
     private static bool IsCascadeOverBudget(CascadeContext cascade) =>
         ShouldApplyCascadeBudget(cascade) && cascade.Clock.Elapsed >= CascadeBudgetFor(cascade);
@@ -1205,6 +1354,12 @@ public sealed class CaptureMonitor : IDisposable
             var recognizeStart = Stopwatch.GetTimestamp();
             var text = await _services.Recognize(prepared, token).ConfigureAwait(false);
             _profiler.Record("ocr.recognize", recognizeStart, _logger);
+            if (_logger.IsVerboseEnabled)
+            {
+                var ids = TriggerMatcher.FindMatches(text, config.Triggers, config.FastMatchThresholdPercent).Select(m => m.Trigger.Id);
+                _logger.Verbose($"OCR frame={_diagnosticFrame} pass={phase} source={bitmap.Width}x{bitmap.Height} prepared={prepared.Width}x{prepared.Height} scale={upscalePercent} prep={prepMode} invert={invert} elapsedMs={Stopwatch.GetElapsedTime(passStart).TotalMilliseconds:F1} chars={text.Length} matched=[{string.Join(",", ids)}]");
+                _logger.Verbose($"OCR frame={_diagnosticFrame} pass={phase} text={TruncateForLog(text.Replace('\r', ' ').Replace('\n', ' '), 2048)}");
+            }
 
             if (!string.IsNullOrWhiteSpace(text))
                 chunks.Add(text);
@@ -1242,6 +1397,7 @@ public sealed class CaptureMonitor : IDisposable
                 Action = match.Trigger.Action,
                 MonitorIndex = frame.MonitorIndex,
                 MonitorName = frame.MonitorName,
+                OcrEvidence = frame.OcrEvidence,
                 OcrSnippet = ocrText.Length <= 280 ? ocrText : ocrText[..280]
             };
             RaiseStatus("Processing", $"Potential trigger observed, processing... ('{match.Trigger.Text}')");
@@ -1397,9 +1553,13 @@ public sealed class CaptureMonitor : IDisposable
 // Narrow capture/recognition seam for deterministic pipeline tests; production uses Windows services.
 internal sealed class CaptureServices
 {
+    public string OcrDescription { get; init; } = "custom";
     public required Func<Bitmap, CancellationToken, Task<string>> Recognize { get; init; }
     public bool OcrAvailable { get; init; } = true;
     public Func<string?> ForegroundProcess { get; init; } = ScreenGrabber.GetForegroundProcessName;
+    public Func<AppConfig, IReadOnlyList<Rectangle>> WindowBounds { get; init; } = config =>
+        ScreenGrabber.GetVisibleProcessWindows(ApplicationScopeEvaluator.GetBlacklistProcessNamesToMask(config))
+            .Select(w => w.Bounds).ToList();
     public Func<AppConfig, CapturedFrame?> Grab { get; init; } = config => CaptureMonitor.Grab(config);
     public Func<CapturedFrame, IReadOnlyList<string>, int> Mask { get; init; } =
         (frame, names) => ScreenGrabber.MaskProcessWindows(frame.Bitmap, frame.ScreenBounds, names);
@@ -1407,6 +1567,6 @@ internal sealed class CaptureServices
     public static CaptureServices Create()
     {
         var ocr = new OcrService();
-        return new CaptureServices { OcrAvailable = ocr.IsAvailable, Recognize = ocr.RecognizeAsync };
+        return new CaptureServices { OcrAvailable = ocr.IsAvailable, Recognize = ocr.RecognizeAsync, OcrDescription = $"Windows/{ocr.LanguageTag}" };
     }
 }

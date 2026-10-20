@@ -16,6 +16,7 @@ public sealed class CapturedFrame : IDisposable
     internal long Epoch { get; set; }
     internal IReadOnlyList<BufferedFrame>? RecordFrames { get; set; }
     internal IReadOnlyList<BufferedFrame>? SequenceFrames { get; set; }
+    internal PayAttention.Core.Models.OcrEvidence? OcrEvidence { get; set; }
 
     public void Dispose() => Bitmap.Dispose();
 }

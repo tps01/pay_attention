@@ -75,3 +75,37 @@ Offline helper regressions (requires `pytest` and Pillow in addition to core):
 ```powershell
 python -m pytest tests/python -q
 ```
+
+## Verbose diagnostics
+
+The suite seeds `logLevel: "verbose"` for the app and sets
+`PAY_ATTENTION_HARNESS_VERBOSE=1` for harness runs. For a standalone harness run:
+
+```powershell
+$env:PAY_ATTENTION_HARNESS_VERBOSE = "1"
+tests/PayAttention.Harness/bin/Release/net8.0-windows10.0.19041.0/PayAttention.Harness.exe pairwise 2 45
+```
+
+Verbose includes Debug logging plus frame timestamp/epoch/fingerprint, queue age,
+backlog and dropped-frame counts, mask counts, crop coordinates, per-pass image
+sizes/preprocessing/timing/text/matched trigger IDs, and budget cutoffs. Compare
+the same frame identifier across lines to distinguish queue delay, unreadable
+pixels, scope filtering, and incomplete searches. Logs and captured screen content
+can contain sensitive information; review evidence before sharing it.
+
+Completion receipts now include capture-time window/monitor rectangles, screen
+origin, OCR settings/prep overrides, and completion time. `inspect` replays those
+rectangles against saved pixels without enumerating today's desktop. Older
+receipts use an image-only fallback. Moving or closing fixtures after capture
+does not change the recorded crop geometry.
+
+Window OCR gives each candidate a baseline before bounded deeper searches. Small
+terminal panes also receive line crops and an alternative crop excluding the final
+isolated glyph; this recovers rows that Windows OCR rejects because of a trailing
+delimiter. Saved pixels remain unchanged. Harness overlays reassert native topmost
+Z-order and report their center-point window owner when visibility fails.
+
+The debounce case changes one fixture in place, waits for its scene acknowledgement
+and a logged suppression, and measures completed-event times before running pixel
+proof. Pairwise testing attempts all ten cases, records a separate verification for
+each, and reports accumulated failures.

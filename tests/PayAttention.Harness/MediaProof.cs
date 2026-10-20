@@ -77,8 +77,10 @@ internal static class MediaProof
             var id = receipt.RootElement.GetProperty("triggerId").GetGuid();
             var trigger = config.Triggers.Single(t => t.Id == id && t.Enabled);
             using var bitmap = new Bitmap(still);
-            using var monitor = new CaptureMonitor(config, new AppLogger(Path.Combine(Path.GetDirectoryName(path)!, "proof-logs")));
-            if (!monitor.VerifySavedImageAsync(bitmap, trigger).GetAwaiter().GetResult())
+            using var monitor = new CaptureMonitor(config, new AppLogger(Path.Combine(Path.GetDirectoryName(path)!, "proof-logs")) { MinLevel = LogLevel.Verbose });
+            var evidence = receipt.RootElement.TryGetProperty("ocrEvidence", out var metadata) && metadata.ValueKind != JsonValueKind.Null
+                ? metadata.Deserialize<OcrEvidence>(JsonDefaults.Options) : null;
+            if (!monitor.VerifySavedImageAsync(bitmap, trigger, evidence).GetAwaiter().GetResult())
                 throw new InvalidOperationException($"Saved pixels do not match trigger {id}: {path}");
         }
     }

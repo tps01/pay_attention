@@ -11,9 +11,9 @@ from support_captures import (
     appdata,
     make_appdata,
     seed_screenshot_config,
+    release_desktop,
     snapshot_captures,
     start_monitor_process,
-    stop_tracked_processes,
     verify_capture_appeared,
     verify_no_capture,
     write_gui_config,
@@ -61,6 +61,13 @@ def main() -> None:
     )
     col.config.load_config(str(gui), force=True)
 
+    try:
+        _pause_and_resume(gui)
+    finally:
+        release_desktop()
+
+
+def _pause_and_resume(gui) -> None:
     col.gui.desktop.connect(desktop_id=2)
     col.gui.desktop.wait_stable(desktop_id=2, timeout_s=5.0)
     before = snapshot_captures()
@@ -100,7 +107,6 @@ def main() -> None:
     )
 
     close_all()
-    stop_tracked_processes()
 
 
 if __name__ == "__main__":

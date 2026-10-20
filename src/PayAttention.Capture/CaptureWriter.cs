@@ -9,6 +9,31 @@ namespace PayAttention.Capture;
 
 public static class CaptureWriter
 {
+    /// <summary>
+    /// Full-monitor stills at JPEG quality (even 95) drop the small text Windows OCR
+    /// read from the raw frame, so the saved file no longer contains the trigger.
+    /// Those evidence stills are PNG. Smaller stills keep the requested JPEG quality.
+    /// Video frames are unchanged.
+    /// </summary>
+    internal static bool EvidenceStillIsLossless(Bitmap bitmap) =>
+        bitmap.Width * (long)bitmap.Height >= 1600L * 900L;
+
+    internal static int EvidenceStillQuality(Bitmap bitmap, int requested)
+    {
+        var quality = requested;
+        if (EvidenceStillIsLossless(bitmap))
+            quality = Math.Max(quality, 95);
+        return Math.Clamp(quality, 40, 95);
+    }
+
+    private static void SaveEvidenceStill(Bitmap bitmap, string path, ScreenshotFormat format, int jpegQuality)
+    {
+        if (format == ScreenshotFormat.Png || EvidenceStillIsLossless(bitmap))
+            ImageHelpers.SavePng(bitmap, path);
+        else
+            ImageHelpers.SaveJpeg(bitmap, path, EvidenceStillQuality(bitmap, jpegQuality));
+    }
+
     public static string WriteScreenshot(
         Bitmap bitmap,
         CaptureSidecar sidecar,
@@ -19,16 +44,14 @@ public static class CaptureWriter
     {
         Directory.CreateDirectory(captureDirectory);
         var safe = Sanitize(sidecar.TriggerText);
-        var extension = format == ScreenshotFormat.Png ? ".png" : ".jpg";
+        var png = format == ScreenshotFormat.Png || EvidenceStillIsLossless(bitmap);
+        var extension = png ? ".png" : ".jpg";
         sidecar.EventId = Guid.NewGuid();
         var baseName = CaptureOwnership.CreateName(sidecar.Timestamp, safe, "screenshot", sidecar.EventId);
         using var pending = new PendingWrite(Path.Combine(captureDirectory, baseName + ".pending"));
         var path = Path.Combine(captureDirectory, baseName + extension);
 
-        if (format == ScreenshotFormat.Png)
-            ImageHelpers.SavePng(bitmap, path);
-        else
-            ImageHelpers.SaveJpeg(bitmap, path, jpegQuality);
+        SaveEvidenceStill(bitmap, path, format, jpegQuality);
 
         sidecar.CaptureFile = Path.GetFileName(path) ?? baseName + extension;
         sidecar.ScreenshotFile = sidecar.CaptureFile;
@@ -59,12 +82,10 @@ public static class CaptureWriter
 
         if (stillFrame is not null)
         {
-            var stillExt = stillFormat == ScreenshotFormat.Png ? ".png" : ".jpg";
+            var stillPng = stillFormat == ScreenshotFormat.Png || EvidenceStillIsLossless(stillFrame);
+            var stillExt = stillPng ? ".png" : ".jpg";
             var stillPath = Path.Combine(captureDirectory, baseName + stillExt);
-            if (stillFormat == ScreenshotFormat.Png)
-                ImageHelpers.SavePng(stillFrame, stillPath);
-            else
-                ImageHelpers.SaveJpeg(stillFrame, stillPath, jpegQuality);
+            SaveEvidenceStill(stillFrame, stillPath, stillFormat, jpegQuality);
             sidecar.ScreenshotFile = Path.GetFileName(stillPath) ?? baseName + stillExt;
         }
 
@@ -143,11 +164,11 @@ public static class CaptureWriter
                 WriteJpegBytesOrBitmap(path, frame.JpegBytes, format, jpegQuality);
             }
 
-            var triggerPath = Path.Combine(folder, SequenceFileName(0, format));
-            if (format == ScreenshotFormat.Png)
-                ImageHelpers.SavePng(triggerFrame, triggerPath);
-            else
-                ImageHelpers.SaveJpeg(triggerFrame, triggerPath, jpegQuality);
+            var triggerFormat = format == ScreenshotFormat.Jpeg && EvidenceStillIsLossless(triggerFrame)
+                ? ScreenshotFormat.Png
+                : format;
+            var triggerPath = Path.Combine(folder, SequenceFileName(0, triggerFormat));
+            SaveEvidenceStill(triggerFrame, triggerPath, format, jpegQuality);
 
             sidecar.CaptureFile = folderName;
             sidecar.ScreenshotFile = Path.GetFileName(triggerPath);
@@ -188,6 +209,8 @@ public static class CaptureWriter
             sidecar.Action,
             sidecar.CaptureFile,
             sidecar.ScreenshotFile,
+            sidecar.OcrEvidence,
+            completedAt = complete ? DateTimeOffset.UtcNow : (DateTimeOffset?)null,
             complete
         }, JsonDefaults.Options));
 

@@ -13,4 +13,4 @@ tests = [
   "test_dmesg.py",
 ]
 teardown = ["teardown_kill.py"]
-fail_fast = true
+fail_fast = false

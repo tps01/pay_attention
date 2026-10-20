@@ -238,6 +238,7 @@
                 <TextBlock Grid.Row="3" Grid.Column="0" Text="Debounce (seconds)" VerticalAlignment="Center" Margin="0,0,0,8"
                            ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed. Per-application debounce overrides this when that app is foreground." />
                 <TextBox x:Name="DebounceBox" AutomationProperties.AutomationId="DebounceBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Width="120" HorizontalAlignment="Left"
+                         GotKeyboardFocus="DebounceBox_GotKeyboardFocus"
                          ToolTip="Minimum time before the same trigger can fire again when the screen has changed. Unchanged screens stay suppressed. Per-application debounce overrides this when that app is foreground." />
 
                 <TextBlock Grid.Row="4" Grid.Column="0" Text="Application scope" VerticalAlignment="Center" Margin="0,0,0,8"

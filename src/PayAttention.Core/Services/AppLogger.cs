@@ -40,6 +40,9 @@ public sealed class AppLogger
     }
 
     public void Debug(string message) => Write(LogLevel.Debug, "DEBUG", message);
+    public bool IsDebugEnabled => MinLevel >= LogLevel.Debug;
+    public bool IsVerboseEnabled => MinLevel >= LogLevel.Verbose;
+    public void Verbose(string message) => Write(LogLevel.Verbose, "VERBOSE", message);
     public void Info(string message) => Write(LogLevel.Info, "INFO", message);
     public void Warn(string message) => Write(LogLevel.Info, "WARN", message);
     public void Error(string message, Exception? ex = null)
@@ -109,8 +112,8 @@ public sealed class AppLogger
         {
             lock (_lock)
             {
-                // Debug messages only when MinLevel is Debug; Info/Warn/Error always write.
-                if (messageLevel == LogLevel.Debug && _minLevel != LogLevel.Debug)
+                // Verbose includes Debug; Info/Warn/Error always write.
+                if (messageLevel > _minLevel)
                     return;
 
                 var line = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff} [{levelLabel}] {message}{Environment.NewLine}";

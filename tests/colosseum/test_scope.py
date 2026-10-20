@@ -14,10 +14,10 @@ from support_captures import (
     appdata,
     make_appdata,
     prepare_scope_bin,
+    release_desktop,
     snapshot_captures,
     start_monitor_process,
     start_scope_fixture,
-    stop_tracked_processes,
     verify_capture_appeared,
     write_config,
 )
@@ -78,26 +78,27 @@ def main() -> None:
         }
     )
 
-    prepare_scope_bin()
-    # Decoy first (left), then allowed pane (right) so whitelist FG is the recent one.
-    start_scope_fixture("PaScopeDecoy.exe", SCOPE_DECOY, "PaDecoy", x=40)
-    start_scope_fixture("PaWhiteAlpha.exe", SCOPE_ALPHA, "PaAlpha", x=500)
-    time.sleep(1.0)
+    try:
+        prepare_scope_bin()
+        # Decoy first (left), then allowed pane (right) so whitelist FG is the recent one.
+        start_scope_fixture("PaScopeDecoy.exe", SCOPE_DECOY, "PaDecoy", x=40)
+        start_scope_fixture("PaWhiteAlpha.exe", SCOPE_ALPHA, "PaAlpha", x=500)
+        time.sleep(1.0)
 
-    before = snapshot_captures()
-    start_monitor_process()
-    verify_capture_appeared(
-        key="whitelist_alpha", before=before, timeout_s=20.0, trigger_text=SCOPE_ALPHA
-    )
+        before = snapshot_captures()
+        start_monitor_process()
+        verify_capture_appeared(
+            key="whitelist_alpha", before=before, timeout_s=20.0, trigger_text=SCOPE_ALPHA
+        )
 
-    # Only the alpha trigger may fire. Confirm no decoy-named capture appeared.
-    captures = list((appdata() / "captures").glob("*"))
-    decoy_safe = "bz2wh6yd"
-    decoy_hits = [p.name for p in captures if decoy_safe in p.name.lower()]
-    if decoy_hits:
-        raise AssertionError(f"decoy captures should not appear: {decoy_hits}")
-
-    stop_tracked_processes()
+        # Only the alpha trigger may fire. Confirm no decoy-named capture appeared.
+        captures = list((appdata() / "captures").glob("*"))
+        decoy_safe = "bz2wh6yd"
+        decoy_hits = [p.name for p in captures if decoy_safe in p.name.lower()]
+        if decoy_hits:
+            raise AssertionError(f"decoy captures should not appear: {decoy_hits}")
+    finally:
+        release_desktop()
 
 
 if __name__ == "__main__":

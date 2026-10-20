@@ -89,6 +89,22 @@ public sealed class TriggerFireGate
                 _entries.Remove(key);
     }
 
+    /// <summary>
+    /// Time until <paramref name="key"/> can be claimed again, or null when it has never fired.
+    /// A zero delay means the debounce window has already elapsed.
+    /// </summary>
+    public TimeSpan? TimeUntilRetry(string key, TimeSpan debounce)
+    {
+        lock (_lock)
+        {
+            if (!_entries.TryGetValue(key, out var entry))
+                return null;
+
+            var remain = entry.LastFireUtc + debounce - DateTimeOffset.UtcNow;
+            return remain < TimeSpan.Zero ? TimeSpan.Zero : remain;
+        }
+    }
+
     public void Reset()
     {
         lock (_lock)

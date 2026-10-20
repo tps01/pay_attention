@@ -12,6 +12,7 @@ from support_captures import (
     appdata,
     load_gui,
     make_appdata,
+    release_desktop,
     seed_screenshot_config,
 )
 
@@ -29,6 +30,13 @@ def main() -> None:
 
     seed_screenshot_config(trigger_text=TOKEN, enabled=False, debounce_seconds=30)
 
+    try:
+        _edit_and_relaunch()
+    finally:
+        release_desktop()
+
+
+def _edit_and_relaunch() -> None:
     col.gui.desktop.connect(desktop_id=1)
     col.gui.desktop.wait_stable(desktop_id=1, timeout_s=5.0)
     col.gui.desktop.verify_visible(
@@ -46,7 +54,10 @@ def main() -> None:
         optional=True,
     )
     col.gui.desktop.capture_screenshot(desktop_id=1, path="captures/settings.png")
-    col.gui.desktop.type_text(desktop_id=1, automation_id="DebounceBox", text="17")
+    # Focus selects the seeded value so these keystrokes replace it.
+    col.gui.desktop.type_text(
+        desktop_id=1, automation_id="DebounceBox", text="17", input="keys"
+    )
     col.gui.desktop.click(desktop_id=1, role="button", name="Save")
     time.sleep(1.0)
 
@@ -75,12 +86,16 @@ def main() -> None:
         role="button",
         name="Save",
     )
-    col.gui.desktop.verify_text(
-        desktop_id=1,
-        key="edited_debounce_reloaded",
-        automation_id="DebounceBox",
-        expected="17",
-    )
+    # get_text reads the control name, which is empty on this box. Saving again
+    # writes whatever the reloaded form is showing.
+    col.gui.desktop.click(desktop_id=1, role="button", name="Save")
+    time.sleep(0.5)
+    col.gui.desktop.press_key(desktop_id=1, key="enter")
+    reloaded = json.loads((appdata() / "config.json").read_text(encoding="utf-8"))
+    if reloaded.get("debounceSeconds") != 17:
+        raise AssertionError(
+            f"Reloaded settings did not keep debounce 17: {reloaded.get('debounceSeconds')}"
+        )
     close_all()
 
 

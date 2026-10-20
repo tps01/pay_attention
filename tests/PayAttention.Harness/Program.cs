@@ -247,6 +247,7 @@ internal static class Program
         var h = 280;
         var easy = false;
         var scrollMs = 0;
+        string? control = null;
         for (var i = 0; i < args.Length; i++)
         {
             static bool Next(ReadOnlySpan<string> a, int idx, out string value)
@@ -263,6 +264,10 @@ internal static class Program
 
             switch (args[i].ToLowerInvariant())
             {
+                case "--control" when Next(args, i, out var controlPath):
+                    control = controlPath;
+                    i++;
+                    break;
                 case "--phrase" when Next(args, i, out var p):
                     phrase = p;
                     i++;
@@ -297,7 +302,7 @@ internal static class Program
             }
         }
 
-        return new FixtureOptions(phrase, title, new Rectangle(x, y, w, h), easy, scrollMs);
+        return new FixtureOptions(phrase, title, new Rectangle(x, y, w, h), easy, scrollMs, control);
     }
 
     private sealed record FixtureOptions(
@@ -305,7 +310,8 @@ internal static class Program
         string Title,
         Rectangle Bounds,
         bool Easy,
-        int ScrollMs);
+        int ScrollMs,
+        string? ControlPath = null);
 
     private static int RunHardMode(int timeoutSec, HarnessOpts? opts = null)
     {
@@ -329,7 +335,7 @@ internal static class Program
         CaptureMonitor? monitor = null;
         Form? overlay = null;
         System.Windows.Forms.Timer? pollTimer = null;
-        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
+        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_VERBOSE") == "1" ? LogLevel.Verbose : Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
         string? shotPath = null;
         string? recPath = null;
         var started = DateTime.UtcNow;
@@ -473,7 +479,7 @@ internal static class Program
         TextBox? box = null;
         System.Windows.Forms.Timer? pollTimer = null;
         System.Windows.Forms.Timer? streamTimer = null;
-        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
+        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_VERBOSE") == "1" ? LogLevel.Verbose : Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
         string? shotPath = null;
         string? recPath = null;
         var started = DateTime.UtcNow;
@@ -742,7 +748,7 @@ internal static class Program
         DmesgCanvas? canvas = null;
         System.Windows.Forms.Timer? pollTimer = null;
         System.Windows.Forms.Timer? streamTimer = null;
-        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
+        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_VERBOSE") == "1" ? LogLevel.Verbose : Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
         string? shotPath = null;
         string? recPath = null;
         var started = DateTime.UtcNow;
@@ -968,7 +974,7 @@ internal static class Program
         CaptureMonitor? monitor = null;
         Form? overlay = null;
         System.Windows.Forms.Timer? pollTimer = null;
-        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
+        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_VERBOSE") == "1" ? LogLevel.Verbose : Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
         string? shotPath = null;
         var started = DateTime.UtcNow;
         var finished = false;
@@ -1133,6 +1139,37 @@ internal static class Program
         form.FormClosed += (_, _) => Application.ExitThread();
 
         System.Windows.Forms.Timer? scrollTimer = null;
+        System.Windows.Forms.Timer? controlTimer = null;
+        var lastScene = -1;
+        if (opts.ControlPath is not null)
+        {
+            controlTimer = new System.Windows.Forms.Timer { Interval = 50 };
+            controlTimer.Tick += (_, _) =>
+            {
+                if (!File.Exists(opts.ControlPath)) return;
+                try
+                {
+                    using var command = System.Text.Json.JsonDocument.Parse(File.ReadAllText(opts.ControlPath));
+                    var scene = command.RootElement.GetProperty("scene").GetInt32();
+                    if (scene == lastScene) return;
+                    form.Left = command.RootElement.GetProperty("x").GetInt32();
+                    if (form.Controls[0] is TextBox box)
+                    {
+                        box.Text = $"scene {scene}\r\nTOKEN>{opts.Phrase}<\r\n";
+                        box.Refresh();
+                    }
+                    form.Refresh();
+                    lastScene = scene;
+                    File.WriteAllText(opts.ControlPath + ".ack", scene.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    Console.WriteLine($"Fixture scene={scene} rendered bounds={form.Bounds}");
+                }
+                catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException)
+                {
+                    // A command is published atomically; retry transient filesystem contention.
+                }
+            };
+            controlTimer.Start();
+        }
         var scrollStep = 0;
         form.Shown += (_, _) =>
         {
@@ -1156,6 +1193,8 @@ internal static class Program
         {
             scrollTimer?.Stop();
             scrollTimer?.Dispose();
+            controlTimer?.Stop();
+            controlTimer?.Dispose();
         };
         Application.Run(form);
         return 0;
@@ -1181,7 +1220,7 @@ internal static class Program
         CaptureMonitor? monitor = null;
         System.Windows.Forms.Timer? pollTimer = null;
         Form? host = null;
-        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
+        var logger = new AppLogger(logDir) { MinLevel = Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_VERBOSE") == "1" ? LogLevel.Verbose : Environment.GetEnvironmentVariable("PAY_ATTENTION_HARNESS_DEBUG") == "1" ? LogLevel.Debug : LogLevel.Info };
         var children = new List<Process>();
         var started = DateTime.UtcNow;
         var finished = false;
@@ -1628,6 +1667,22 @@ internal static class Program
             System.Runtime.InteropServices.DllImportSearchPath.System32)]
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [System.Runtime.InteropServices.DefaultDllImportSearchPaths(
+            System.Runtime.InteropServices.DllImportSearchPath.System32)]
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        public static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
+        [System.Runtime.InteropServices.DefaultDllImportSearchPaths(
+            System.Runtime.InteropServices.DllImportSearchPath.System32)]
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern IntPtr WindowFromPoint(Point point);
+
+        [System.Runtime.InteropServices.DefaultDllImportSearchPaths(
+            System.Runtime.InteropServices.DllImportSearchPath.System32)]
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
 
         [System.Runtime.InteropServices.DefaultDllImportSearchPaths(
             System.Runtime.InteropServices.DllImportSearchPath.System32)]
@@ -2183,6 +2238,8 @@ internal static class Program
         }
     }
 
+    private static DateTime _lastOcclusionLogUtc;
+
     private static void KeepOnTop(Form? overlay)
     {
         // Keep visible above other windows without stealing keyboard focus.
@@ -2190,6 +2247,18 @@ internal static class Program
         {
             overlay.TopMost = true;
             overlay.BringToFront();
+            // Reassert native Z-order even when WinForms' TopMost property is already
+            // true (a browser/video window may have moved above it since the last tick).
+            var raised = NativeMethods.SetWindowPos(overlay.Handle, new IntPtr(-1), 0, 0, 0, 0,
+                0x0001 | 0x0002 | 0x0010 | 0x0040); // NOSIZE | NOMOVE | NOACTIVATE | SHOWWINDOW
+            overlay.Refresh();
+            var center = new Point(overlay.Left + overlay.Width / 2, overlay.Top + overlay.Height / 2);
+            var covering = NativeMethods.GetAncestor(NativeMethods.WindowFromPoint(center), 2); // GA_ROOT
+            if ((!raised || covering != overlay.Handle) && DateTime.UtcNow - _lastOcclusionLogUtc > TimeSpan.FromSeconds(2))
+            {
+                _lastOcclusionLogUtc = DateTime.UtcNow;
+                Console.WriteLine($"Fixture visibility: raised={raised} bounds={overlay.Bounds} expected=0x{overlay.Handle:X} centerOwner=0x{covering:X} foreground={ScreenGrabber.GetForegroundProcessName()}");
+            }
         }
     }
 

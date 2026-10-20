@@ -740,6 +740,12 @@ public partial class SettingsWindow : Window
         }
     }
 
+    private void DebounceBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.TextBox box)
+            box.SelectAll();
+    }
+
     private void CommitGrids()
     {
         TriggersGrid.CommitEdit(DataGridEditingUnit.Cell, true);

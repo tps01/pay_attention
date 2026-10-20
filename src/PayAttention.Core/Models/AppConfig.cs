@@ -27,7 +27,7 @@ public sealed class AppConfig
     public bool OcrEnableNeon { get; set; } = true;
     public bool OcrEnableTerminal { get; set; } = true;
     public int OcrTerminalMaxRegions { get; set; } = 4;
-    /// <summary>Legacy profile/config field; frozen-frame OCR has no window cap.</summary>
+    /// <summary>Maximum capture-time window crops searched before the full-frame fallback.</summary>
     public int OcrMaxWindows { get; set; } = 12;
     public int OcrQueueCapacity { get; set; } = 4;
     public int OcrCascadeBudgetFastMs { get; set; } = 400;

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 import colosseum as col
+from colosseum.decorators import VerificationResult, verification
 
 from support_captures import ensure_built, harness_output, run_harness
 
@@ -78,13 +79,27 @@ def _run_case(case_id: int, kind: str) -> None:
             raise AssertionError(f"pairwise case {case_id}: missing LATENCY\n{output}")
 
 
+@verification
+def verify_pairwise_outcome(*, key: str, passed: bool, message: str) -> VerificationResult:
+    return VerificationResult(status="PASS" if passed else "FAIL", message=message)
+
+
 def main() -> None:
     from support_captures import require_live_execution
 
     require_live_execution()
     ensure_built()
+    failures = []
     for case_id, kind in PAIRWISE_CASES:
-        _run_case(case_id, kind)
+        try:
+            _run_case(case_id, kind)
+        except AssertionError as exc:
+            failures.append(str(exc))
+            verify_pairwise_outcome(key=f"pairwise_{case_id}", passed=False, message=str(exc))
+        else:
+            verify_pairwise_outcome(key=f"pairwise_{case_id}", passed=True, message=f"case {case_id}: {kind}")
+    if failures:
+        raise AssertionError("\n\n".join(failures))
 
 
 if __name__ == "__main__":
