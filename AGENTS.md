@@ -19,17 +19,22 @@ Prefer short-lived branches off `develop`:
   `develop`)
 
 Naming is guidance, not a hard gate. Do not invent long-lived feature branches.
+**Never delete `develop` or `main`.**
 
 ## GitHub workflow
 
 - Day-to-day: branch → PR into **`develop`** → wait for CI (`Tests` / job `test`)
-  → merge when green. Prefer merge or squash; GitHub deletes the head branch on
-  merge.
+  → merge when green. Prefer merge or squash; GitHub
+  `delete_branch_on_merge` removes **feature/bugfix/hotfix** heads only.
 - Do not push straight to `develop` or `main` for non-trivial work; both are
   protected (PR required, required status checks, no force-push / branch
   deletion).
 - Release: when asked, open **`develop` → `main`**, merge when green, then tag
   `vX.Y.Z` and `git push origin vX.Y.Z` (Release workflow builds the win-x64 zip).
+  After the release merge, confirm `origin/develop` still exists; if
+  `delete_branch_on_merge` removed it, recreate with
+  `git push origin origin/main:refs/heads/develop`. Do not treat head-branch
+  deletion as success for release PRs.
 - Keep PRs focused; one coherent concern when practical.
 - Commit subjects: short imperative (e.g. `Fix pause hotkey race on Stop.`).
 - PR body: behavior, how tested, limitations; screenshots for UI changes.
