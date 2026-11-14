@@ -3,14 +3,12 @@ name: Tests
 on:
   pull_request:
     branches: [develop, main]
-  push:
-    branches: [develop, main]
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  dotnet:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,11 +17,29 @@ jobs:
           dotnet-version: "8.0.x"
       - run: dotnet build PayAttention.sln -c Release --nologo
       - run: dotnet test tests/PayAttention.Tests/PayAttention.Tests.csproj -c Release --no-build --nologo
+
+  python:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/workflows/test.yml
       - name: Install offline-helper test dependencies
         run: >-
           python -m pip install pytest Pillow
           https://github.com/tps01/colosseum-core/releases/download/v0.16.6/colosseum_core-0.16.6-py3-none-any.whl
       - run: python -m pytest tests/python -q
+
+  test:
+    if: always()
+    needs: [dotnet, python]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both test suites
+        env:
+          DOTNET_RESULT: ${{ needs.dotnet.result }}
+          PYTHON_RESULT: ${{ needs.python.result }}
+        run: test "$DOTNET_RESULT" = success && test "$PYTHON_RESULT" = success
